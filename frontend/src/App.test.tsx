@@ -1,0 +1,55 @@
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import App from "./App";
+import type { Snapshot } from "./types";
+
+const snapshot: Snapshot = {
+  version: 2,
+  created_at: "2026-09-29T00:00:00Z",
+  label: "分叉切换",
+  tip_hash: "B4",
+  tip_height: 4,
+  blocks: [
+    { hash: "G", prev_hash: "", height: 0, canonical: true, branch_id: "main", confirmations: 5, work: 100, txs: [] },
+    { hash: "A1", prev_hash: "G", height: 1, canonical: false, branch_id: "fork-A1", confirmations: 0, work: 10, txs: [] },
+    { hash: "A2", prev_hash: "A1", height: 2, canonical: false, branch_id: "fork-A1", confirmations: 0, work: 10, txs: [{ index: 0, txid: "txA", memo: "旧分叉位置" }] },
+    { hash: "B1", prev_hash: "G", height: 1, canonical: true, branch_id: "main", confirmations: 4, work: 10, txs: [] },
+    { hash: "B2", prev_hash: "B1", height: 2, canonical: true, branch_id: "main", confirmations: 3, work: 10, txs: [{ index: 0, txid: "txA" }] },
+    { hash: "B4", prev_hash: "B2", height: 4, canonical: true, branch_id: "main", confirmations: 1, work: 10, txs: [] },
+  ],
+  tx_index: [
+    { txid: "txA", block_hash: "A2", index: 0, height: 2, canonical: false, confirmations: 0, branch_id: "fork-A1" },
+    { txid: "txA", block_hash: "B2", index: 0, height: 2, canonical: true, confirmations: 3, branch_id: "main" },
+  ],
+  tx_refs: [],
+};
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+    ok: true,
+    json: async () => {
+      if (url.includes("/api/state")) return { snapshot };
+      if (url.includes("/api/versions")) return { versions: [{ version: 2, created_at: "", tip_hash: "B4", tip_height: 4 }] };
+      return {};
+    },
+  })));
+});
+
+describe("App 分叉快照渲染", () => {
+  it("显示版本、主链端点与被撤回旧分叉统计", async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getAllByText(/B4/).length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/已撤回旧分叉/).length).toBeGreaterThan(0);
+  });
+
+  it("重复交易在旧分叉与新主链各有位置，确认状态随区块一致", async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByText("txA").filter((el) => el.tagName === "BUTTON")[0]);
+    // 展开后应同时出现 A2（撤回，0 确认）与 B2（主链，3 确认）两个位置。
+    await waitFor(() => expect(screen.getByText("旧分叉撤回")).toBeTruthy());
+    expect(screen.getByText("主链有效")).toBeTruthy();
+    expect(screen.getByText("重复 ×2（跨分叉）")).toBeTruthy();
+  });
+});
