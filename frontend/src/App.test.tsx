@@ -53,3 +53,28 @@ describe("App 分叉快照渲染", () => {
     expect(screen.getByText("重复 ×2（跨分叉）")).toBeTruthy();
   });
 });
+
+describe("App 空索引与空查询", () => {
+  it("首次打开（空快照）显示明确状态而不白屏", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/api/state")) {
+          // 后端空索引可能返回 null 数组，前端必须兼容。
+          return { snapshot: { version: 0, created_at: "", tip_hash: "", tip_height: 0, blocks: null, tx_index: null, tx_refs: null } };
+        }
+        if (url.includes("/api/versions")) return { versions: [] };
+        return {};
+      },
+    })));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/当前没有索引版本/)).toBeTruthy());
+  });
+
+  it("查询不到的交易给出明确提示", async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0));
+    fireEvent.change(screen.getByPlaceholderText(/按交易 ID 查询/), { target: { value: "不存在的交易" } });
+    await waitFor(() => expect(screen.getByText(/没有匹配/)).toBeTruthy());
+  });
+});

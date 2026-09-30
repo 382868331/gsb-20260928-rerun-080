@@ -54,7 +54,14 @@ export default function App() {
       {message && <div className="info">{message}</div>}
       {error && <div className="error">{error}</div>}
 
-      {snapshot && (
+      {snapshot && snapshot.blocks.length === 0 && (
+        <section className="panel-empty empty-state">
+          当前没有索引版本：尚未导入任何人工区块。
+          展开“导入人工区块”载入内置分叉样例或粘贴 JSON 后，这里会显示主链、分叉与交易索引。
+        </section>
+      )}
+
+      {snapshot && snapshot.blocks.length > 0 && (
         <>
           <section className="summary">
             <div>版本 <strong>v{snapshot.version}</strong>{snapshot.label ? ` · ${snapshot.label}` : ""}</div>

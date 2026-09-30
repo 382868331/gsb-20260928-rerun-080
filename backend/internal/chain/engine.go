@@ -17,6 +17,11 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 		Version:   nextVersion,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		Label:     label,
+		// 初始化为空切片而非 nil，保证空索引也序列化为 []，
+		// 前端首次打开（尚无任何版本）不会拿到 null 而崩溃。
+		Blocks:  []model.BlockView{},
+		TxIndex: []model.TxPosition{},
+		TxRefs:  []model.TxRef{},
 	}
 	if len(blocks) == 0 {
 		return snap
@@ -162,6 +167,7 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 			Work:          b.Work,
 			Miner:         b.Miner,
 			Timestamp:     b.Timestamp,
+			Txs:           []model.TxInBlock{},
 		}
 		for i, tx := range b.Txs {
 			view.Txs = append(view.Txs, model.TxInBlock{TxID: tx.TxID, Index: i, Memo: tx.Memo})

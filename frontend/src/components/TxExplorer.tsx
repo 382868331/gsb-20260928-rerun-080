@@ -27,6 +27,7 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
   }, [snapshot, query]);
 
   const selectedPositions = selectedTx ? groups.find(([id]) => id === selectedTx)?.[1] ?? snapshot.tx_index.filter((p) => p.txid === selectedTx) : null;
+  const selectedMissing = selectedTx != null && (selectedPositions ?? []).length === 0;
   const refs = selectedTx
     ? snapshot.tx_refs.filter((r) => r.from_txid === selectedTx || r.to_txid === selectedTx)
     : [];
@@ -42,6 +43,11 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
       <div className="tx-columns">
         <div>
           <h4>交易索引（{groups.length} 笔）</h4>
+          {groups.length === 0 && (
+            <div className="panel-empty">
+              {snapshot.tx_index.length === 0 ? "当前版本没有任何交易。" : `没有匹配“${query.trim()}”的交易。`}
+            </div>
+          )}
           <ul className="tx-list">
             {groups.map(([id, positions]) => (
               <li key={id}>
@@ -55,7 +61,10 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
         </div>
         <div>
           {!selectedTx && <div className="panel-empty">选择交易查看位置与引用。</div>}
-          {selectedTx && (
+          {selectedTx && selectedMissing && (
+            <div className="panel-empty">当前版本中查询不到交易 {selectedTx}，它可能只存在于其他索引版本。</div>
+          )}
+          {selectedTx && !selectedMissing && (
             <div>
               <h4>{selectedTx} 的全部出现位置</h4>
               <table className="data-table">

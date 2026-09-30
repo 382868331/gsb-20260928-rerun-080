@@ -1,11 +1,27 @@
 package chain
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"chainresearch/internal/model"
 	"chainresearch/internal/sample"
 )
+
+// 空索引必须序列化为 [] 而非 null，否则前端首次打开会因 null 崩溃白屏。
+func TestEmptySnapshotSerializesArrays(t *testing.T) {
+	snap := BuildSnapshot(nil, 0, "")
+	data, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"blocks":[]`, `"tx_index":[]`, `"tx_refs":[]`} {
+		if !strings.Contains(string(data), field) {
+			t.Fatalf("空快照缺少 %s: %s", field, data)
+		}
+	}
+}
 
 func canonicalMap(snap model.VersionSnapshot) map[string]bool {
 	m := map[string]bool{}
