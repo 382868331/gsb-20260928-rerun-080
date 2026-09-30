@@ -81,6 +81,14 @@ func TestEmptyStateIsVersionZero(t *testing.T) {
 	if sr.Snapshot.Version != 0 || len(sr.Snapshot.Blocks) != 0 {
 		t.Fatalf("空库状态应为版本 0 且无区块: %+v", sr.Snapshot)
 	}
+
+	// 空快照的数组字段必须序列化为 [] 而非 null，否则前端首次打开会白屏。
+	raw := rw.Body.String()
+	for _, field := range []string{"\"blocks\": []", "\"tx_index\": []", "\"tx_refs\": []"} {
+		if !strings.Contains(raw, field) {
+			t.Fatalf("空快照字段应序列化为空数组，缺少 %s: %s", field, raw)
+		}
+	}
 }
 
 func blockViewByHash(blocks []model.BlockView, hash string) *model.BlockView {

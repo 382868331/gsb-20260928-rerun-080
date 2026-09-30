@@ -42,6 +42,11 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
       <div className="tx-columns">
         <div>
           <h4>交易索引（{groups.length} 笔）</h4>
+          {groups.length === 0 && (
+            <div className="panel-empty">
+              {query.trim() ? `未找到匹配“${query.trim()}”的交易。` : "当前索引版本中没有交易。"}
+            </div>
+          )}
           <ul className="tx-list">
             {groups.map(([id, positions]) => (
               <li key={id}>
@@ -58,6 +63,9 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
           {selectedTx && (
             <div>
               <h4>{selectedTx} 的全部出现位置</h4>
+              {(selectedPositions ?? []).length === 0 && (
+                <div className="panel-empty">交易 {selectedTx} 不在当前索引版本（v{snapshot.version}）中。</div>
+              )}
               <table className="data-table">
                 <thead><tr><th>高度</th><th>区块</th><th>块内序号</th><th>状态</th><th>确认数</th><th>分支</th></tr></thead>
                 <tbody>

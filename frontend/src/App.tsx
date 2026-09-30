@@ -54,8 +54,16 @@ export default function App() {
       {message && <div className="info">{message}</div>}
       {error && <div className="error">{error}</div>}
 
+      {!snapshot && !error && <div className="panel-empty">正在加载索引快照…</div>}
+
       {snapshot && (
         <>
+          {snapshot.blocks.length === 0 ? (
+            <div className="panel-empty">
+              当前没有索引版本：尚未导入任何人工区块。展开“导入人工区块”载入内置分叉样例或粘贴区块 JSON 后即可浏览。
+            </div>
+          ) : (
+          <>
           <section className="summary">
             <div>版本 <strong>v{snapshot.version}</strong>{snapshot.label ? ` · ${snapshot.label}` : ""}</div>
             <div>主链端点 <strong>{snapshot.tip_hash || "-"}</strong> @ #{snapshot.tip_height}</div>
@@ -80,6 +88,8 @@ export default function App() {
               <TxExplorer snapshot={snapshot} selectedTx={selectedTx} onSelectTx={setSelectedTx} onSelectBlock={setSelectedBlock} />
             </div>
           </section>
+          </>
+          )}
         </>
       )}
     </div>

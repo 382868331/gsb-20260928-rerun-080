@@ -52,4 +52,19 @@ describe("App 分叉快照渲染", () => {
     expect(screen.getByText("主链有效")).toBeTruthy();
     expect(screen.getByText("重复 ×2（跨分叉）")).toBeTruthy();
   });
+
+  it("首次打开空索引（null 字段）不白屏，并给出明确状态", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/api/state")) {
+          return { snapshot: { version: 0, created_at: "", tip_hash: "", tip_height: 0, blocks: null, tx_index: null, tx_refs: null } };
+        }
+        if (url.includes("/api/versions")) return { versions: [] };
+        return {};
+      },
+    })));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/当前没有索引版本/)).toBeTruthy());
+  });
 });
