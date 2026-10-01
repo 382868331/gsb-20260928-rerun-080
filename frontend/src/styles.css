@@ -69,3 +69,7 @@ button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
 .ok-text { color: #15803d; font-weight: 600; }
 .reverted-text { color: #b45309; font-weight: 600; }
 .warn-text { color: #b91c1c; font-weight: 600; }
+.ref-detail { color: #52525b; font-size: 12px; margin-top: 2px; }
+.ref-list li { padding: 5px 0; border-bottom: 1px dashed #e4e4e7; }
+.diff-group h4 { margin: 10px 0 4px; }
+.ref-diff .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }

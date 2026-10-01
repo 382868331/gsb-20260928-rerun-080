@@ -21,7 +21,20 @@ const snapshot: Snapshot = {
     { txid: "txA", block_hash: "A2", index: 0, height: 2, canonical: false, confirmations: 0, branch_id: "fork-A1" },
     { txid: "txA", block_hash: "B2", index: 0, height: 2, canonical: true, confirmations: 3, branch_id: "main" },
   ],
-  tx_refs: [],
+  tx_refs: [
+    {
+      from_txid: "txA", to_txid: "coin-G", vout: 0, resolved: true,
+      from_block_hash: "A2", from_branch_id: "fork-A1", from_canonical: false, from_confirmations: 0,
+      to_block_hash: "G", to_branch_id: "main", to_canonical: true, to_confirmations: 5,
+      active: false,
+    },
+    {
+      from_txid: "txA", to_txid: "coin-G", vout: 0, resolved: true,
+      from_block_hash: "B2", from_branch_id: "main", from_canonical: true, from_confirmations: 3,
+      to_block_hash: "G", to_branch_id: "main", to_canonical: true, to_confirmations: 5,
+      active: true,
+    },
+  ],
 };
 
 beforeEach(() => {
@@ -51,6 +64,17 @@ describe("App 分叉快照渲染", () => {
     await waitFor(() => expect(screen.getByText("旧分叉撤回")).toBeTruthy());
     expect(screen.getByText("主链有效")).toBeTruthy();
     expect(screen.getByText("重复 ×2（跨分叉）")).toBeTruthy();
+  });
+
+  it("引用同时展示所在区块、链视角与当前有效性", async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByText("txA").filter((el) => el.tagName === "BUTTON")[0]);
+    // 同一引用在旧分叉（非当前链视角）与主链（当前有效）各一条。
+    await waitFor(() => expect(screen.getByText("当前有效")).toBeTruthy());
+    expect(screen.getByText("非当前链视角")).toBeTruthy();
+    expect(screen.getByText(/旧分叉视角 · 0 确认/)).toBeTruthy();
+    expect(screen.getByText(/主链视角 · 3 确认/)).toBeTruthy();
   });
 
   it("首次打开空索引（null 字段）不白屏，并给出明确状态", async () => {

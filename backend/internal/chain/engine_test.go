@@ -105,13 +105,94 @@ func TestDuplicateTransactionHasMultiplePositions(t *testing.T) {
 
 func TestTxReferencesResolved(t *testing.T) {
 	snap := BuildSnapshot(sample.Blocks(), 2, "")
-	refs := map[string]model.TxRef{}
-	for _, r := range snap.TxRefs {
-		refs[r.FromTxID+"->"+r.ToTxID] = r
+	var found *model.TxRef
+	for i := range snap.TxRefs {
+		r := &snap.TxRefs[i]
+		if r.FromTxID == "txB4" && r.ToTxID == "txB3" {
+			found = r
+		}
 	}
-	r, ok := refs["txB4->txB3"]
-	if !ok || !r.Resolved {
-		t.Fatalf("txB4 应引用已存在的 txB3: %+v", r)
+	if found == nil || !found.Resolved {
+		t.Fatalf("txB4 应引用已存在的 txB3: %+v", found)
+	}
+}
+
+func TestTxRefsCarryBlockBranchAndValidity(t *testing.T) {
+	snap := BuildSnapshot(sample.Blocks(), 2, "")
+	refsByFrom := map[string][]model.TxRef{}
+	for _, r := range snap.TxRefs {
+		refsByFrom[r.FromTxID] = append(refsByFrom[r.FromTxID], r)
+	}
+
+	// txA 在 A2（旧分叉）与 B2（主链）各出现一次，应各产生一条引用，
+	// 各自标注所在区块、分支与当前有效性。
+	txARefs := refsByFrom["txA"]
+	if len(txARefs) != 2 {
+		t.Fatalf("txA 应在两个位置各有一条引用，实际 %d: %+v", len(txARefs), txARefs)
+	}
+	var forkRef, mainRef *model.TxRef
+	for i := range txARefs {
+		r := &txARefs[i]
+		if r.ToTxID != "coin-G" {
+			t.Fatalf("txA 引用目标应为 coin-G: %+v", r)
+		}
+		if !r.Resolved || r.ToBlockHash != "G" || !r.ToCanonical {
+			t.Fatalf("coin-G 应在主链解析: %+v", r)
+		}
+		switch r.FromBlockHash {
+		case "A2":
+			forkRef = r
+		case "B2":
+			mainRef = r
+		}
+	}
+	if forkRef == nil || mainRef == nil {
+		t.Fatalf("txA 引用应分别来自 A2 与 B2: %+v", txARefs)
+	}
+	// 位于旧分叉的引用不得被认作当前有效。
+	if forkRef.FromCanonical || forkRef.Active {
+		t.Fatalf("旧分叉上的引用不应当前有效: %+v", *forkRef)
+	}
+	if forkRef.FromBranchID == "main" || forkRef.FromConfirmations != 0 {
+		t.Fatalf("旧分叉引用应带分叉视角且 0 确认: %+v", *forkRef)
+	}
+	if !mainRef.FromCanonical || !mainRef.Active || mainRef.FromBranchID != "main" {
+		t.Fatalf("主链上的引用应当前有效: %+v", *mainRef)
+	}
+	if mainRef.FromConfirmations != 3 {
+		t.Fatalf("B2 上 txA 引用应 3 确认: %+v", *mainRef)
+	}
+
+	// 引用目标只存在于旧分叉时，不得提前认作当前有效。
+	var txA3Ref *model.TxRef
+	for i := range snap.TxRefs {
+		if snap.TxRefs[i].FromTxID == "txA3" {
+			txA3Ref = &snap.TxRefs[i]
+		}
+	}
+	if txA3Ref == nil {
+		t.Fatal("txA3 应有一条引用")
+	}
+	if !txA3Ref.Resolved || txA3Ref.ToCanonical || txA3Ref.Active {
+		t.Fatalf("txA3 引用目标只在旧分叉，应解析但非当前有效: %+v", *txA3Ref)
+	}
+	if txA3Ref.ToBlockHash != "A2" || txA3Ref.ToBranchID == "main" {
+		t.Fatalf("txA3 引用目标应标注旧分叉位置: %+v", *txA3Ref)
+	}
+
+	// 重复构建（等价于重复导入重放）不应产生重复引用。
+	snapAgain := BuildSnapshot(sample.Blocks(), 3, "")
+	if len(snapAgain.TxRefs) != len(snap.TxRefs) {
+		t.Fatalf("重复构建引用数应一致: %d != %d", len(snapAgain.TxRefs), len(snap.TxRefs))
+	}
+	seen := map[string]int{}
+	for _, r := range snapAgain.TxRefs {
+		seen[r.FromTxID+"@"+r.FromBlockHash+"->"+r.ToTxID]++
+	}
+	for k, n := range seen {
+		if n != 1 {
+			t.Fatalf("引用 %s 出现 %d 次，应去重", k, n)
+		}
 	}
 }
 

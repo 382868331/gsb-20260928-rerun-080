@@ -42,6 +42,34 @@ export interface TxRef {
   to_txid: string;
   vout: number;
   resolved: boolean;
+  from_block_hash: string;
+  from_branch_id: string;
+  from_canonical: boolean;
+  from_confirmations: number;
+  to_block_hash?: string;
+  to_branch_id?: string;
+  to_canonical: boolean;
+  to_confirmations: number;
+  active: boolean;
+}
+
+export type RefDiffKind =
+  | "position_migrated"
+  | "target_changed"
+  | "confirmations_only"
+  | "added"
+  | "removed";
+
+export interface RefDiffEntry {
+  kind: RefDiffKind;
+  before?: TxRef;
+  after?: TxRef;
+}
+
+export interface RefDiff {
+  from_version: number;
+  to_version: number;
+  entries: RefDiffEntry[];
 }
 
 export interface Snapshot {

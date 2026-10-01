@@ -27,6 +27,7 @@ func New(s *store.Store) *Server {
 func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/state", s.handleState)
 	s.Mux.HandleFunc("/api/versions", s.handleVersions)
+	s.Mux.HandleFunc("/api/refdiff", s.handleRefDiff)
 	s.Mux.HandleFunc("/api/import", s.handleImport)
 	s.Mux.HandleFunc("/api/sample", s.handleSample)
 }
@@ -89,6 +90,36 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, map[string]any{"versions": metas})
+}
+
+// handleRefDiff 返回两个索引版本之间的引用差异，用于查看分叉切换
+// 前后的引用变化：位置迁移、引用目标变化与仅确认数变化。
+func (s *Server) handleRefDiff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	from, err := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
+	if err != nil {
+		http.Error(w, "缺少有效的 from 版本号", http.StatusBadRequest)
+		return
+	}
+	to, err := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
+	if err != nil {
+		http.Error(w, "缺少有效的 to 版本号", http.StatusBadRequest)
+		return
+	}
+	oldSnap, ok := s.Store.Snapshot(from)
+	if !ok {
+		http.Error(w, "from 版本不存在", http.StatusNotFound)
+		return
+	}
+	newSnap, ok := s.Store.Snapshot(to)
+	if !ok {
+		http.Error(w, "to 版本不存在", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, chain.DiffRefs(oldSnap, newSnap))
 }
 
 type importRequest struct {

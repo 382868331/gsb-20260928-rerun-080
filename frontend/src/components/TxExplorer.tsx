@@ -85,12 +85,32 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
               {refs.length === 0 && <div className="panel-empty">无引用。</div>}
               <ul className="ref-list">
                 {refs.map((r) => (
-                  <li key={`${r.from_txid}-${r.to_txid}-${r.vout}`}>
-                    <button className="link-btn" onClick={() => onSelectTx(r.from_txid)}>{r.from_txid}</button>
-                    <span> 花费 → </span>
-                    <button className="link-btn" onClick={() => onSelectTx(r.to_txid)}>{r.to_txid}</button>
-                    <span> vout {r.vout} </span>
-                    <span className={r.resolved ? "ok-text" : "warn-text"}>{r.resolved ? "已解析" : "未在索引中找到"}</span>
+                  <li key={`${r.from_txid}-${r.from_block_hash}-${r.to_txid}-${r.vout}`}>
+                    <div>
+                      <button className="link-btn" onClick={() => onSelectTx(r.from_txid)}>{r.from_txid}</button>
+                      <span> 花费 → </span>
+                      <button className="link-btn" onClick={() => onSelectTx(r.to_txid)}>{r.to_txid}</button>
+                      <span> vout {r.vout} </span>
+                      <span className={r.active ? "ok-text" : "warn-text"}>
+                        {r.active ? "当前有效" : r.resolved ? "非当前链视角" : "目标未到达"}
+                      </span>
+                    </div>
+                    <div className="ref-detail">
+                      所在区块{" "}
+                      <button className="link-btn" onClick={() => onSelectBlock(r.from_block_hash)}>{r.from_block_hash}</button>
+                      {" · "}{r.from_branch_id}{" · "}
+                      {r.from_canonical ? `主链视角 · ${r.from_confirmations} 确认` : "旧分叉视角 · 0 确认"}
+                      {" · 目标 "}
+                      {r.resolved ? (
+                        <>
+                          <button className="link-btn" onClick={() => onSelectBlock(r.to_block_hash!)}>{r.to_block_hash}</button>
+                          {" · "}{r.to_branch_id}{" · "}
+                          {r.to_canonical ? `主链 ${r.to_confirmations} 确认` : "旧分叉 · 0 确认"}
+                        </>
+                      ) : (
+                        "尚未在索引中解析到"
+                      )}
+                    </div>
                   </li>
                 ))}
               </ul>

@@ -133,13 +133,9 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 		return id
 	}
 
-	knownTx := map[string]bool{}
 	blockHashList := make([]string, 0, len(byHash))
 	for h := range byHash {
 		blockHashList = append(blockHashList, h)
-		for _, tx := range byHash[h].Txs {
-			knownTx[tx.TxID] = true
-		}
 	}
 	sort.Slice(blockHashList, func(i, j int) bool {
 		if heightOf[blockHashList[i]] != heightOf[blockHashList[j]] {
@@ -193,21 +189,63 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 	})
 
 	// 交易引用关系：input 指向被花费的前序交易。
+	// 同一交易在每个分叉位置各产生一条引用，标注所在区块、链视角
+	// 与当前有效性；重复导入同一批区块不会产生重复引用（区块已按
+	// Hash 去重，且此处按 引用方位置+目标 去重）。
+	posByTx := map[string][]model.TxPosition{}
+	for _, p := range snap.TxIndex {
+		posByTx[p.TxID] = append(posByTx[p.TxID], p)
+	}
+	// 解析目标位置：优先主链位置（当前链视角），否则取高度最低的
+	// 分叉位置并标记 ToCanonical=false，此时引用不算当前有效。
+	resolveTarget := func(txID string) (model.TxPosition, bool) {
+		positions := posByTx[txID]
+		if len(positions) == 0 {
+			return model.TxPosition{}, false
+		}
+		best := positions[0]
+		for _, p := range positions {
+			if p.Canonical {
+				return p, true
+			}
+			if p.Height < best.Height {
+				best = p
+			}
+		}
+		return best, true
+	}
 	refSeen := map[string]bool{}
 	for _, h := range blockHashList {
-		for _, tx := range byHash[h].Txs {
+		b := byHash[h]
+		for _, tx := range b.Txs {
 			for _, in := range tx.Inputs {
-				key := tx.TxID + "->" + in.TxID
+				key := tx.TxID + "@" + h + "->" + in.TxID
 				if refSeen[key] {
 					continue
 				}
 				refSeen[key] = true
-				snap.TxRefs = append(snap.TxRefs, model.TxRef{
-					FromTxID: tx.TxID,
-					ToTxID:   in.TxID,
-					Vout:     in.Vout,
-					Resolved: knownTx[in.TxID],
-				})
+				ref := model.TxRef{
+					FromTxID:      tx.TxID,
+					ToTxID:        in.TxID,
+					Vout:          in.Vout,
+					FromBlockHash: h,
+					FromBranchID:  branchOf(h),
+					FromCanonical: canonical[h],
+				}
+				if canonical[h] {
+					ref.FromConfirmations = snap.TipHeight - heightOf[h] + 1
+				}
+				if target, ok := resolveTarget(in.TxID); ok {
+					ref.Resolved = true
+					ref.ToBlockHash = target.BlockHash
+					ref.ToBranchID = target.BranchID
+					ref.ToCanonical = target.Canonical
+					ref.ToConfirmations = target.Confirmations
+				}
+				// 仅当引用方与目标都在当前主链上时才算当前有效；
+				// 目标尚未到达或只存在于另一分叉时不提前认作有效。
+				ref.Active = ref.Resolved && ref.FromCanonical && ref.ToCanonical
+				snap.TxRefs = append(snap.TxRefs, ref)
 			}
 		}
 	}
@@ -215,7 +253,10 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 		if snap.TxRefs[i].FromTxID != snap.TxRefs[j].FromTxID {
 			return snap.TxRefs[i].FromTxID < snap.TxRefs[j].FromTxID
 		}
-		return snap.TxRefs[i].ToTxID < snap.TxRefs[j].ToTxID
+		if snap.TxRefs[i].ToTxID != snap.TxRefs[j].ToTxID {
+			return snap.TxRefs[i].ToTxID < snap.TxRefs[j].ToTxID
+		}
+		return snap.TxRefs[i].FromBlockHash < snap.TxRefs[j].FromBlockHash
 	})
 
 	return snap
