@@ -80,9 +80,44 @@ type TxPosition struct {
 }
 
 // TxRef 是交易之间的引用关系（input 花费某笔前序交易）。
+// 每条引用同时记录花费方所在位置（区块、高度、链视角），
+// 以及在该版本下是否当前有效：
+//   - Resolved：被引用的前序交易已出现在索引中；
+//   - ToCanonical：被引用交易在主链上有有效位置；
+//   - Valid：花费方位于主链、引用已解析且目标也在主链。
+// 引用尚未到达（未解析）或花费方/目标位于被撤回分叉时 Valid=false。
 type TxRef struct {
+	FromTxID      string `json:"from_txid"`
+	ToTxID        string `json:"to_txid"`
+	Vout          int    `json:"vout"`
+	FromBlockHash string `json:"from_block_hash"`
+	FromHeight    int64  `json:"from_height"`
+	BranchID      string `json:"branch_id"`
+	Canonical     bool   `json:"canonical"`
+	Confirmations int64  `json:"confirmations"`
+	Resolved      bool   `json:"resolved"`
+	ToCanonical   bool   `json:"to_canonical"`
+	Valid         bool   `json:"valid"`
+}
+
+// RefChange 描述两个索引版本之间一条引用关系的变化。
+// Kind 取值：
+//   - added / removed：引用出现或消失；
+//   - moved：同一引用（from->to:vout）的花费方位置迁移到另一区块/高度；
+//   - retargeted：同一花费位置（from_txid@区块:vout）的引用目标发生变化；
+//   - confirmations：位置与目标未变，仅确认数变化。
+type RefChange struct {
+	Kind     string `json:"kind"`
 	FromTxID string `json:"from_txid"`
 	ToTxID   string `json:"to_txid"`
 	Vout     int    `json:"vout"`
-	Resolved bool   `json:"resolved"`
+	Before   *TxRef `json:"before,omitempty"`
+	After    *TxRef `json:"after,omitempty"`
+}
+
+// RefDiff 是两个索引版本之间引用关系的完整差异。
+type RefDiff struct {
+	FromVersion int64       `json:"from_version"`
+	ToVersion   int64       `json:"to_version"`
+	Changes     []RefChange `json:"changes"`
 }

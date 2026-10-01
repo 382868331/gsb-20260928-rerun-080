@@ -27,6 +27,7 @@ func New(s *store.Store) *Server {
 func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/state", s.handleState)
 	s.Mux.HandleFunc("/api/versions", s.handleVersions)
+	s.Mux.HandleFunc("/api/refdiff", s.handleRefDiff)
 	s.Mux.HandleFunc("/api/import", s.handleImport)
 	s.Mux.HandleFunc("/api/sample", s.handleSample)
 }
@@ -148,6 +149,36 @@ func (s *Server) handleSample(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"blocks": sample.Blocks()})
+}
+
+// handleRefDiff 返回两个索引版本之间引用关系的差异，
+// 用于对比分叉切换前后的位置迁移、引用目标变化与仅确认数变化。
+func (s *Server) handleRefDiff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	fromV, err := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
+	if err != nil {
+		http.Error(w, "缺少或无效的 from 版本号", http.StatusBadRequest)
+		return
+	}
+	toV, err := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
+	if err != nil {
+		http.Error(w, "缺少或无效的 to 版本号", http.StatusBadRequest)
+		return
+	}
+	fromSnap, ok := s.Store.Snapshot(fromV)
+	if !ok {
+		http.Error(w, "from 版本不存在", http.StatusNotFound)
+		return
+	}
+	toSnap, ok := s.Store.Snapshot(toV)
+	if !ok {
+		http.Error(w, "to 版本不存在", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, chain.DiffRefs(fromSnap, toSnap))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

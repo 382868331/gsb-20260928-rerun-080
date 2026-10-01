@@ -67,5 +67,9 @@ button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
   border-radius: 999px; padding: 1px 8px;
 }
 .ok-text { color: #15803d; font-weight: 600; }
+.ref-detail { color: #52525b; font-size: 12px; margin: 2px 0 6px; display: flex; flex-direction: column; gap: 2px; }
+.ref-diff-panel {
+  background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; padding: 12px 14px;
+}
 .reverted-text { color: #b45309; font-weight: 600; }
 .warn-text { color: #b91c1c; font-weight: 600; }

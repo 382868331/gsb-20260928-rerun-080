@@ -6,6 +6,7 @@ import { BlockDetail } from "./components/BlockDetail";
 import { TxExplorer } from "./components/TxExplorer";
 import { VersionBar } from "./components/VersionBar";
 import { ImportPanel } from "./components/ImportPanel";
+import { RefDiffPanel } from "./components/RefDiffPanel";
 import "./styles.css";
 
 export default function App() {
@@ -86,6 +87,13 @@ export default function App() {
             <div>
               <h2>交易索引与引用</h2>
               <TxExplorer snapshot={snapshot} selectedTx={selectedTx} onSelectTx={setSelectedTx} onSelectBlock={setSelectedBlock} />
+            </div>
+          </section>
+
+          <section>
+            <h2>引用差异（分叉切换前后版本对比）</h2>
+            <div className="ref-diff-panel">
+              <RefDiffPanel versions={versions} current={snapshot.version} onSelectTx={setSelectedTx} onSelectBlock={setSelectedBlock} />
             </div>
           </section>
           </>

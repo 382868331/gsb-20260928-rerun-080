@@ -1,4 +1,4 @@
-import type { ImportResponse, RawBlock, Snapshot, VersionMeta } from "./types";
+import type { ImportResponse, RawBlock, RefDiff, Snapshot, VersionMeta } from "./types";
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, {
@@ -36,4 +36,11 @@ export function importBlocks(blocks: RawBlock[], label: string): Promise<ImportR
 
 export function fetchSample(): Promise<{ blocks: RawBlock[] }> {
   return req("/api/sample");
+}
+
+export function fetchRefDiff(from: number, to: number): Promise<RefDiff> {
+  return req<RefDiff>(`/api/refdiff?from=${from}&to=${to}`).then((d) => {
+    d.changes = d.changes ?? [];
+    return d;
+  });
 }

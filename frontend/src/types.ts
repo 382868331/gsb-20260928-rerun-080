@@ -41,7 +41,29 @@ export interface TxRef {
   from_txid: string;
   to_txid: string;
   vout: number;
+  from_block_hash: string;
+  from_height: number;
+  branch_id: string;
+  canonical: boolean;
+  confirmations: number;
   resolved: boolean;
+  to_canonical: boolean;
+  valid: boolean;
+}
+
+export interface RefChange {
+  kind: "added" | "removed" | "moved" | "retargeted" | "confirmations";
+  from_txid: string;
+  to_txid: string;
+  vout: number;
+  before?: TxRef;
+  after?: TxRef;
+}
+
+export interface RefDiff {
+  from_version: number;
+  to_version: number;
+  changes: RefChange[];
 }
 
 export interface Snapshot {

@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"strconv"
 	"sort"
 	"time"
 
@@ -134,11 +135,15 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 	}
 
 	knownTx := map[string]bool{}
+	canonTx := map[string]bool{}
 	blockHashList := make([]string, 0, len(byHash))
 	for h := range byHash {
 		blockHashList = append(blockHashList, h)
 		for _, tx := range byHash[h].Txs {
 			knownTx[tx.TxID] = true
+			if canonical[h] {
+				canonTx[tx.TxID] = true
+			}
 		}
 	}
 	sort.Slice(blockHashList, func(i, j int) bool {
@@ -193,20 +198,36 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 	})
 
 	// 交易引用关系：input 指向被花费的前序交易。
+	// 键包含花费方所在区块，同一交易跨分叉的每次出现各自产生引用，
+	// 重复导入同一区块不会产生重复关系（按区块+交易去重）。
 	refSeen := map[string]bool{}
 	for _, h := range blockHashList {
 		for _, tx := range byHash[h].Txs {
 			for _, in := range tx.Inputs {
-				key := tx.TxID + "->" + in.TxID
+				key := tx.TxID + "@" + h + "->" + in.TxID + ":" + strconv.Itoa(in.Vout)
 				if refSeen[key] {
 					continue
 				}
 				refSeen[key] = true
+				isCanon := canonical[h]
+				var conf int64
+				if isCanon {
+					conf = snap.TipHeight - heightOf[h] + 1
+				}
+				resolved := knownTx[in.TxID]
+				toCanon := canonTx[in.TxID]
 				snap.TxRefs = append(snap.TxRefs, model.TxRef{
-					FromTxID: tx.TxID,
-					ToTxID:   in.TxID,
-					Vout:     in.Vout,
-					Resolved: knownTx[in.TxID],
+					FromTxID:      tx.TxID,
+					ToTxID:        in.TxID,
+					Vout:          in.Vout,
+					FromBlockHash: h,
+					FromHeight:    heightOf[h],
+					BranchID:      branchOf(h),
+					Canonical:     isCanon,
+					Confirmations: conf,
+					Resolved:      resolved,
+					ToCanonical:   toCanon,
+					Valid:         isCanon && resolved && toCanon,
 				})
 			}
 		}
@@ -214,6 +235,9 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 	sort.SliceStable(snap.TxRefs, func(i, j int) bool {
 		if snap.TxRefs[i].FromTxID != snap.TxRefs[j].FromTxID {
 			return snap.TxRefs[i].FromTxID < snap.TxRefs[j].FromTxID
+		}
+		if snap.TxRefs[i].FromBlockHash != snap.TxRefs[j].FromBlockHash {
+			return snap.TxRefs[i].FromBlockHash < snap.TxRefs[j].FromBlockHash
 		}
 		return snap.TxRefs[i].ToTxID < snap.TxRefs[j].ToTxID
 	})

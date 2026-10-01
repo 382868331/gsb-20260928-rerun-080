@@ -107,11 +107,65 @@ func TestTxReferencesResolved(t *testing.T) {
 	snap := BuildSnapshot(sample.Blocks(), 2, "")
 	refs := map[string]model.TxRef{}
 	for _, r := range snap.TxRefs {
-		refs[r.FromTxID+"->"+r.ToTxID] = r
+		refs[r.FromTxID+"@"+r.FromBlockHash+"->"+r.ToTxID] = r
 	}
-	r, ok := refs["txB4->txB3"]
+	r, ok := refs["txB4@B4->txB3"]
 	if !ok || !r.Resolved {
 		t.Fatalf("txB4 应引用已存在的 txB3: %+v", r)
+	}
+}
+
+func TestTxRefCarriesBlockBranchAndValidity(t *testing.T) {
+	snap := BuildSnapshot(sample.Blocks(), 2, "")
+	byKey := map[string]model.TxRef{}
+	for _, r := range snap.TxRefs {
+		byKey[r.FromTxID+"@"+r.FromBlockHash+"->"+r.ToTxID] = r
+	}
+	// 主链上的引用：携带区块、高度、链视角与确认数，且当前有效。
+	main := byKey["txB4@B4->txB3"]
+	if main.FromBlockHash != "B4" || main.FromHeight != 4 || main.BranchID != "main" {
+		t.Fatalf("引用应携带花费方区块/高度/链视角: %+v", main)
+	}
+	if !main.Canonical || main.Confirmations != 1 || !main.Valid || !main.ToCanonical {
+		t.Fatalf("主链引用应当前有效: %+v", main)
+	}
+	// 旧分叉上的同一引用（txA 在 A2 与 B2 各出现一次）不得提前认作当前有效。
+	forkRef := byKey["txA@A2->coin-G"]
+	if forkRef.Canonical || forkRef.Valid || forkRef.Confirmations != 0 {
+		t.Fatalf("旧分叉上的引用不应当前有效: %+v", forkRef)
+	}
+	if forkRef.BranchID == "main" {
+		t.Fatalf("旧分叉引用的链视角不应为 main: %+v", forkRef)
+	}
+	// 同一交易跨分叉的引用应各有一条，不合并也不重复。
+	count := 0
+	for _, r := range snap.TxRefs {
+		if r.FromTxID == "txA" && r.ToTxID == "coin-G" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("txA->coin-G 应有 A2/B2 两条引用，实际 %d", count)
+	}
+}
+
+func TestTxRefUnresolvedNotValid(t *testing.T) {
+	blocks := []model.Block{
+		{Hash: "G", PrevHash: "", Work: 1, Txs: []model.Transaction{{TxID: "coin-G"}}},
+		{Hash: "N1", PrevHash: "G", Work: 1, Txs: []model.Transaction{{
+			TxID:   "txFuture",
+			Inputs: []model.TxInput{{TxID: "txNotYet", Vout: 0}},
+		}}},
+	}
+	snap := BuildSnapshot(blocks, 1, "")
+	var ref *model.TxRef
+	for i := range snap.TxRefs {
+		if snap.TxRefs[i].FromTxID == "txFuture" {
+			ref = &snap.TxRefs[i]
+		}
+	}
+	if ref == nil || ref.Resolved || ref.Valid {
+		t.Fatalf("引用目标尚未到达时不得认作当前有效: %+v", ref)
 	}
 }
 

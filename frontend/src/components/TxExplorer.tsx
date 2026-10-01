@@ -85,12 +85,28 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
               {refs.length === 0 && <div className="panel-empty">无引用。</div>}
               <ul className="ref-list">
                 {refs.map((r) => (
-                  <li key={`${r.from_txid}-${r.to_txid}-${r.vout}`}>
+                  <li key={`${r.from_txid}-${r.from_block_hash}-${r.to_txid}-${r.vout}`}>
                     <button className="link-btn" onClick={() => onSelectTx(r.from_txid)}>{r.from_txid}</button>
                     <span> 花费 → </span>
                     <button className="link-btn" onClick={() => onSelectTx(r.to_txid)}>{r.to_txid}</button>
                     <span> vout {r.vout} </span>
-                    <span className={r.resolved ? "ok-text" : "warn-text"}>{r.resolved ? "已解析" : "未在索引中找到"}</span>
+                    <div className="ref-detail">
+                      <span>
+                        所在区块{" "}
+                        <button className="link-btn" onClick={() => onSelectBlock(r.from_block_hash)}>{r.from_block_hash}</button>
+                        {" "}#{r.from_height} · 链视角 {r.branch_id}
+                        {r.canonical ? "（主链）" : "（已撤回分叉）"} · 确认数 {r.confirmations}
+                      </span>
+                      <span className={r.valid ? "ok-text" : r.resolved ? "warn-text" : "reverted-text"}>
+                        {r.valid
+                          ? "当前有效"
+                          : !r.resolved
+                            ? "引用目标尚未到达索引"
+                            : !r.canonical
+                              ? "花费方位于旧分叉，当前无效"
+                              : "引用目标不在主链，当前无效"}
+                      </span>
+                    </div>
                   </li>
                 ))}
               </ul>
