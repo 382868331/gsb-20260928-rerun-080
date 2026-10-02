@@ -1,5 +1,11 @@
 import type { BlockView } from "../types";
 
+export const RANGE_LABEL: Record<string, string> = {
+  confirmed: "确认范围",
+  tentative: "暂定范围",
+  conflict: "冲突范围",
+};
+
 interface Props {
   block: BlockView | null;
   onSelectTx: (txid: string) => void;
@@ -14,6 +20,9 @@ export function BlockDetail({ block, onSelectTx }: Props) {
       <div className={`status-badge ${block.canonical ? "ok" : "reverted"}`}>
         {block.canonical ? `主链 · ${block.confirmations} 个确认` : `已撤回（${block.branch_id}）· 确认数 0`}
       </div>
+      {block.range && (
+        <div className={`status-badge range-${block.range}`}>{RANGE_LABEL[block.range]}</div>
+      )}
       <dl className="kv">
         <dt>区块 Hash</dt><dd>{block.hash}</dd>
         <dt>高度</dt><dd>{block.height}</dd>

@@ -20,6 +20,7 @@ export interface BlockView {
   height: number;
   canonical: boolean;
   branch_id: string;
+  range?: ChainRange;
   confirmations: number;
   work: number;
   miner?: string;
@@ -27,12 +28,15 @@ export interface BlockView {
   txs: TxInBlock[];
 }
 
+export type ChainRange = "confirmed" | "tentative" | "conflict";
+
 export interface TxPosition {
   txid: string;
   block_hash: string;
   index: number;
   height: number;
   canonical: boolean;
+  range?: ChainRange;
   confirmations: number;
   branch_id: string;
 }
@@ -42,6 +46,7 @@ export interface TxRef {
   to_txid: string;
   vout: number;
   resolved: boolean;
+  scope?: ChainRange;
   from_block_hash: string;
   from_branch_id: string;
   from_canonical: boolean;
@@ -51,6 +56,39 @@ export interface TxRef {
   to_canonical: boolean;
   to_confirmations: number;
   active: boolean;
+}
+
+export interface CheckpointBasis {
+  version: number;
+  tip_hash: string;
+  tip_height: number;
+  chain: string[];
+}
+
+export interface CheckpointConflict {
+  rival_tip_hash: string;
+  rival_tip_height: number;
+  rival_work: number;
+  diverge_height: number;
+  ref_changes?: RefDiff;
+}
+
+export interface CheckpointView {
+  block_hash: string;
+  height: number;
+  confirmed_at: string;
+  note?: string;
+  basis: CheckpointBasis;
+  status: "ok" | "conflict";
+  conflict?: CheckpointConflict;
+}
+
+export interface ResearchLine {
+  id: string;
+  label: string;
+  tip_hash: string;
+  tip_height: number;
+  created_at: string;
 }
 
 export type RefDiffKind =
@@ -81,6 +119,8 @@ export interface Snapshot {
   blocks: BlockView[];
   tx_index: TxPosition[];
   tx_refs: TxRef[];
+  checkpoint?: CheckpointView | null;
+  research_lines?: ResearchLine[];
 }
 
 export interface VersionMeta {

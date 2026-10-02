@@ -16,15 +16,19 @@ import (
 // Store 保存所有已导入的原始区块与历史版本快照。
 // 区块按 Hash 去重，导入中断后重放同一批数据不会产生重复索引。
 type Store struct {
-	mu        sync.RWMutex
-	path      string
-	blocks    map[string]model.Block
-	snapshots []model.VersionSnapshot
+	mu            sync.RWMutex
+	path          string
+	blocks        map[string]model.Block
+	snapshots     []model.VersionSnapshot
+	checkpoint    *model.Checkpoint
+	researchLines []model.ResearchLine
 }
 
 type persisted struct {
-	Blocks    []model.Block           `json:"blocks"`
-	Snapshots []model.VersionSnapshot `json:"snapshots"`
+	Blocks        []model.Block           `json:"blocks"`
+	Snapshots     []model.VersionSnapshot `json:"snapshots"`
+	Checkpoint    *model.Checkpoint       `json:"checkpoint,omitempty"`
+	ResearchLines []model.ResearchLine    `json:"research_lines,omitempty"`
 }
 
 func Open(dir string) (*Store, error) {
@@ -45,10 +49,57 @@ func Open(dir string) (*Store, error) {
 			s.blocks[b.Hash] = b
 		}
 		s.snapshots = p.Snapshots
+		s.checkpoint = p.Checkpoint
+		s.researchLines = p.ResearchLines
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// SetCheckpoint 保存研究者确认的检查点（含确认依据），并落盘。
+func (s *Store) SetCheckpoint(cp *model.Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpoint = cp
+	return s.flushLocked()
+}
+
+// ClearCheckpoint 由研究者显式撤销检查点确认。
+func (s *Store) ClearCheckpoint() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpoint = nil
+	return s.flushLocked()
+}
+
+// Checkpoint 返回当前检查点（未确认为 nil）。
+func (s *Store) Checkpoint() *model.Checkpoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.checkpoint
+}
+
+// AddResearchLine 登记一条独立研究线（按端点 Hash 幂等）。
+func (s *Store) AddResearchLine(line model.ResearchLine) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rl := range s.researchLines {
+		if rl.TipHash == line.TipHash {
+			return nil
+		}
+	}
+	s.researchLines = append(s.researchLines, line)
+	return s.flushLocked()
+}
+
+// ResearchLines 返回已登记的全部独立研究线。
+func (s *Store) ResearchLines() []model.ResearchLine {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.ResearchLine, len(s.researchLines))
+	copy(out, s.researchLines)
+	return out
 }
 
 // ImportResult 报告本次导入的实际变化。
@@ -149,8 +200,10 @@ func (s *Store) flushLocked() error {
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].Hash < blocks[j].Hash })
 	p := persisted{
-		Blocks:    blocks,
-		Snapshots: s.snapshots,
+		Blocks:        blocks,
+		Snapshots:     s.snapshots,
+		Checkpoint:    s.checkpoint,
+		ResearchLines: s.researchLines,
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {

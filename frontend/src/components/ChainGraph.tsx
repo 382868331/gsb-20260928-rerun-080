@@ -11,7 +11,7 @@ interface Props {
 }
 
 const NODE_W = 184;
-const NODE_H = 88;
+const NODE_H = 104;
 
 export function ChainGraph({ blocks, selectedBlock, onSelect }: Props) {
   const { nodes, edges } = useMemo(() => {
@@ -54,18 +54,30 @@ function blockLabel(b: BlockView, selected: boolean) {
       <div style={{ color: b.canonical ? "#1d4ed8" : "#b45309", fontWeight: 600 }}>
         {b.canonical ? `主链 · ${b.confirmations} 确认` : `已撤回旧分叉 · ${b.branch_id}`}
       </div>
+      {b.range && (
+        <div style={{ color: rangeColor(b.range), fontWeight: 600 }}>{rangeLabel(b.range)}</div>
+      )}
       <div style={{ color: "#52525b" }}>{b.txs.length} 笔交易 · work {b.work}</div>
     </div>
   );
 }
 
+function rangeLabel(range: string) {
+  return range === "confirmed" ? "确认范围" : range === "conflict" ? "冲突范围" : "暂定范围";
+}
+
+function rangeColor(range: string) {
+  return range === "confirmed" ? "#15803d" : range === "conflict" ? "#b91c1c" : "#1d4ed8";
+}
+
 function nodeStyle(b: BlockView, selected: boolean): React.CSSProperties {
+  const bg = b.range === "confirmed" ? "#dcfce7" : b.range === "conflict" ? "#fee2e2" : b.canonical ? "#dbeafe" : "#fef3c7";
   return {
     width: NODE_W,
     height: NODE_H,
     borderRadius: 8,
     border: selected ? "2px solid #0f172a" : "1px solid #cbd5e1",
-    background: b.canonical ? "#dbeafe" : "#fef3c7",
+    background: bg,
     padding: 0,
   };
 }

@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { fetchSample, importBlocks } from "../api";
-import type { RawBlock } from "../types";
+import type { ImportResponse, RawBlock } from "../types";
 
 interface Props {
-  onImported: (msg: string) => void;
+  onImported: (result: ImportResponse, msg: string) => void;
 }
 
 // 人工区块导入：支持粘贴 JSON 或载入内置分叉样例。
@@ -34,7 +34,7 @@ export function ImportPanel({ onImported }: Props) {
         throw new Error("顶层必须是区块数组");
       }
       const result = await importBlocks(blocks, label || `手动导入 ${new Date().toLocaleString()}`);
-      onImported(`导入完成：新增 ${result.added}，跳过已索引 ${result.skipped}，当前版本 v${result.state.version}，主链端点 ${result.state.tip_hash}`);
+      onImported(result, `导入完成：新增 ${result.added}，跳过已索引 ${result.skipped}，当前版本 v${result.state.version}，主链端点 ${result.state.tip_hash}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

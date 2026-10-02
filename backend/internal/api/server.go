@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"chainresearch/internal/chain"
 	"chainresearch/internal/model"
@@ -30,6 +31,194 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/refdiff", s.handleRefDiff)
 	s.Mux.HandleFunc("/api/import", s.handleImport)
 	s.Mux.HandleFunc("/api/sample", s.handleSample)
+	s.Mux.HandleFunc("/api/checkpoint", s.handleCheckpoint)
+	s.Mux.HandleFunc("/api/checkpoint/resolve", s.handleCheckpointResolve)
+}
+
+// rebuild 以当前区块集合、检查点与研究线生成新版本快照并落盘。
+func (s *Server) rebuild(label string) (model.VersionSnapshot, error) {
+	next := int64(1)
+	if latest, ok := s.Store.LatestSnapshot(); ok {
+		next = latest.Version + 1
+	}
+	snap := chain.BuildSnapshotWithCheckpoint(s.Store.AllBlocks(), next, label, s.Store.Checkpoint(), s.Store.ResearchLines())
+	if err := s.Store.SaveSnapshot(snap); err != nil {
+		return snap, err
+	}
+	return snap, nil
+}
+
+// handleCheckpoint 管理研究者确认的链检查点。
+// GET 返回当前检查点视图（含确认依据与冲突）与独立研究线；
+// POST 确认一个主链区块为检查点；DELETE 显式撤销确认。
+func (s *Server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		var view *model.CheckpointView
+		if latest, ok := s.Store.LatestSnapshot(); ok {
+			view = latest.Checkpoint
+		}
+		writeJSON(w, map[string]any{
+			"checkpoint":     view,
+			"research_lines": s.Store.ResearchLines(),
+		})
+	case http.MethodPost:
+		var req struct {
+			Hash string `json:"hash"`
+			Note string `json:"note"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "请求体不是有效 JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		latest, ok := s.Store.LatestSnapshot()
+		if !ok {
+			http.Error(w, "尚未有任何索引版本，无法确认检查点", http.StatusConflict)
+			return
+		}
+		var target *model.BlockView
+		for i := range latest.Blocks {
+			if latest.Blocks[i].Hash == req.Hash {
+				target = &latest.Blocks[i]
+			}
+		}
+		if target == nil {
+			http.Error(w, "区块不存在于当前索引", http.StatusNotFound)
+			return
+		}
+		if !target.Canonical {
+			http.Error(w, "只能确认当前主链上的区块为检查点", http.StatusConflict)
+			return
+		}
+		// 确认依据：当时版本、主链端点与链根到检查点的完整链段，
+		// 持久化后重开仍可追踪旧确认依据。
+		byHash := map[string]model.BlockView{}
+		for _, b := range latest.Blocks {
+			byHash[b.Hash] = b
+		}
+		chainHashes := []string{}
+		for cur := target.Hash; ; {
+			chainHashes = append([]string{cur}, chainHashes...)
+			b := byHash[cur]
+			if b.PrevHash == "" {
+				break
+			}
+			if _, ok := byHash[b.PrevHash]; !ok {
+				break
+			}
+			cur = b.PrevHash
+		}
+		cp := &model.Checkpoint{
+			BlockHash:   target.Hash,
+			Height:      target.Height,
+			ConfirmedAt: time.Now().UTC().Format(time.RFC3339),
+			Note:        strings.TrimSpace(req.Note),
+			Basis: model.CheckpointBasis{
+				Version:   latest.Version,
+				TipHash:   latest.TipHash,
+				TipHeight: latest.TipHeight,
+				Chain:     chainHashes,
+			},
+		}
+		if err := s.Store.SetCheckpoint(cp); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		snap, err := s.rebuild("确认检查点 " + target.Hash)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("检查点已确认: %s @ #%d（依据版本 v%d）", cp.BlockHash, cp.Height, cp.Basis.Version)
+		writeJSON(w, map[string]any{"state": snap})
+	case http.MethodDelete:
+		if s.Store.Checkpoint() == nil {
+			http.Error(w, "当前没有已确认的检查点", http.StatusNotFound)
+			return
+		}
+		if err := s.Store.ClearCheckpoint(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		snap, err := s.rebuild("撤销检查点确认")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("检查点确认已撤销")
+		writeJSON(w, map[string]any{"state": snap})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleCheckpointResolve 由研究者裁决越过检查点的冲突：
+//   - action=adopt：显式撤销原确认，采纳竞争链（主链按工作量重选）；
+//   - action=branch：保留原确认，把竞争链登记为独立研究线。
+//
+// 系统本身绝不自动撤销确认，两个动作都来自研究者的明确请求。
+func (s *Server) handleCheckpointResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+		Label  string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "请求体不是有效 JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	latest, ok := s.Store.LatestSnapshot()
+	if !ok || latest.Checkpoint == nil || latest.Checkpoint.Conflict == nil {
+		http.Error(w, "当前没有待裁决的检查点冲突", http.StatusConflict)
+		return
+	}
+	conflict := latest.Checkpoint.Conflict
+	switch req.Action {
+	case "adopt":
+		if err := s.Store.ClearCheckpoint(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = "采纳竞争链 " + conflict.RivalTipHash + "，撤销检查点确认"
+		}
+		snap, err := s.rebuild(label)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("冲突裁决：采纳竞争链 %s，原检查点确认已撤销", conflict.RivalTipHash)
+		writeJSON(w, map[string]any{"state": snap})
+	case "branch":
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = "独立研究：" + conflict.RivalTipHash
+		}
+		line := model.ResearchLine{
+			ID:        "rl-" + conflict.RivalTipHash,
+			Label:     label,
+			TipHash:   conflict.RivalTipHash,
+			TipHeight: conflict.RivalTipHeight,
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := s.Store.AddResearchLine(line); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		snap, err := s.rebuild("登记独立研究线 " + line.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("冲突裁决：竞争链 %s 登记为独立研究线，原检查点确认保留", conflict.RivalTipHash)
+		writeJSON(w, map[string]any{"state": snap})
+	default:
+		http.Error(w, "action 必须是 adopt 或 branch", http.StatusBadRequest)
+	}
 }
 
 type stateResponse struct {
@@ -161,7 +350,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		if latest, ok := s.Store.LatestSnapshot(); ok {
 			next = latest.Version + 1
 		}
-		snap = chain.BuildSnapshot(s.Store.AllBlocks(), next, strings.TrimSpace(req.Label))
+		snap = chain.BuildSnapshotWithCheckpoint(s.Store.AllBlocks(), next, strings.TrimSpace(req.Label), s.Store.Checkpoint(), s.Store.ResearchLines())
 		if err := s.Store.SaveSnapshot(snap); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

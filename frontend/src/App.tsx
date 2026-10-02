@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchState, fetchVersions } from "./api";
-import type { Snapshot, VersionMeta } from "./types";
+import type { ImportResponse, Snapshot, VersionMeta } from "./types";
 import { ChainGraph } from "./components/ChainGraph";
 import { BlockDetail } from "./components/BlockDetail";
 import { TxExplorer } from "./components/TxExplorer";
 import { VersionBar } from "./components/VersionBar";
 import { ImportPanel } from "./components/ImportPanel";
 import { RefDiffPanel } from "./components/RefDiffPanel";
+import { CheckpointPanel } from "./components/CheckpointPanel";
 import "./styles.css";
 
 export default function App() {
@@ -17,23 +18,62 @@ export default function App() {
   const [selectedTx, setSelectedTx] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [incomplete, setIncomplete] = useState<string | null>(null);
+
+  // 快照与版本号必须一起更新，保证选择器与页面各区域始终对应同一版本。
+  const applySnapshot = useCallback((snap: Snapshot) => {
+    setSnapshot(snap);
+    setVersion(snap.version || undefined);
+    setIncomplete(null);
+    setError(null);
+  }, []);
+
+  const refreshVersions = useCallback(async () => {
+    try {
+      const { versions: vs } = await fetchVersions();
+      setVersions(vs);
+    } catch {
+      // 版本列表刷新失败不影响当前视角。
+    }
+  }, []);
 
   const load = useCallback(async (v?: number) => {
     setError(null);
     try {
       const { snapshot: snap } = await fetchState(v);
-      setSnapshot(snap);
-      setVersion(snap.version || undefined);
+      applySnapshot(snap);
       const { versions: vs } = await fetchVersions();
       setVersions(vs);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // 切换或载入失败：保留原视角，并明确显示未完成状态。
+      const reason = e instanceof Error ? e.message : String(e);
+      setSnapshot((current) => {
+        if (current) {
+          setIncomplete(`版本切换未完成：${reason}。仍显示 v${current.version} 视角，可重试。`);
+        } else {
+          setError(reason);
+        }
+        return current;
+      });
     }
-  }, []);
+  }, [applySnapshot]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const onImported = useCallback((result: ImportResponse, msg: string) => {
+    // 导入响应自带同一版本的新快照，直接应用，选择器同步指向新版本。
+    applySnapshot(result.state);
+    setMessage(msg);
+    void refreshVersions();
+  }, [applySnapshot, refreshVersions]);
+
+  const onCheckpointChanged = useCallback((snap: Snapshot, msg: string) => {
+    applySnapshot(snap);
+    setMessage(msg);
+    void refreshVersions();
+  }, [applySnapshot, refreshVersions]);
 
   const selectedBlockView = useMemo(
     () => snapshot?.blocks.find((b) => b.hash === selectedBlock) ?? null,
@@ -51,8 +91,9 @@ export default function App() {
       </header>
 
       <VersionBar versions={versions} current={version ?? 0} onSelect={(v) => void load(v === 0 ? undefined : v)} onRefresh={() => void load(version)} />
-      <ImportPanel onImported={(msg) => { setMessage(msg); void load(); }} />
+      <ImportPanel onImported={onImported} />
       {message && <div className="info">{message}</div>}
+      {incomplete && <div className="warn">{incomplete}</div>}
       {error && <div className="error">{error}</div>}
 
       {!snapshot && !error && <div className="panel-empty">正在加载索引快照…</div>}
@@ -74,8 +115,15 @@ export default function App() {
             <div>交易引用 <strong>{snapshot.tx_refs.length}</strong></div>
           </section>
 
+          <CheckpointPanel
+            snapshot={snapshot}
+            selectedBlock={selectedBlockView}
+            onChanged={onCheckpointChanged}
+            onSelectTx={setSelectedTx}
+          />
+
           <section>
-            <h2>链拓扑（蓝=当前主链，黄=被撤回旧分叉）</h2>
+            <h2>链拓扑（蓝=当前主链，黄=被撤回旧分叉{snapshot.checkpoint ? "，绿=确认范围，红=冲突范围" : ""}）</h2>
             <ChainGraph blocks={snapshot.blocks} selectedBlock={selectedBlock} onSelect={setSelectedBlock} />
           </section>
 

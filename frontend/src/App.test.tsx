@@ -91,4 +91,104 @@ describe("App 分叉快照渲染", () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText(/当前没有索引版本/)).toBeTruthy());
   });
+
+  it("导入完成后选择器与页面各区域同步指向新版本", async () => {
+    const snapshotV3: Snapshot = { ...snapshot, version: 3, label: "新导入" };
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/api/import")) return { added: 1, skipped: 0, state: snapshotV3 };
+        if (url.includes("/api/state")) return { snapshot };
+        if (url.includes("/api/versions")) {
+          return {
+            versions: [
+              { version: 2, created_at: "", tip_hash: "B4", tip_height: 4 },
+              { version: 3, created_at: "", tip_hash: "B4", tip_height: 4, label: "新导入" },
+            ],
+          };
+        }
+        return {};
+      },
+    })));
+    render(<App />);
+    await waitFor(() => expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0));
+    // 展开导入面板并提交。
+    fireEvent.click(screen.getByText(/导入人工区块/));
+    fireEvent.change(screen.getByPlaceholderText(/"hash"/), { target: { value: '[{"hash":"X","prev_hash":"","txs":[]}]' } });
+    fireEvent.click(screen.getByText("导入并重建索引"));
+    // 主体与顶部选择器都应指向 v3，而不是停留在旧版本。
+    await waitFor(() => expect(screen.getAllByText(/v3/).length).toBeGreaterThan(0));
+    const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    expect(select.value).toBe("3");
+    expect(screen.getByText(/导入完成：新增 1/)).toBeTruthy();
+  });
+
+  it("版本切换失败时保留原视角并显示未完成状态", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("/api/state?v=1")) {
+        return { ok: false, status: 404, text: async () => "版本不存在", json: async () => ({}) };
+      }
+      return {
+        ok: true,
+        json: async () => {
+          if (url.includes("/api/state")) return { snapshot };
+          if (url.includes("/api/versions")) {
+            return {
+              versions: [
+                { version: 1, created_at: "", tip_hash: "A3", tip_height: 3 },
+                { version: 2, created_at: "", tip_hash: "B4", tip_height: 4 },
+              ],
+            };
+          }
+          return {};
+        },
+      };
+    }));
+    render(<App />);
+    await waitFor(() => expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0));
+    const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "1" } });
+    // 切换失败：保留 v2 视角，显示未完成状态。
+    await waitFor(() => expect(screen.getByText(/版本切换未完成/)).toBeTruthy());
+    expect(screen.getByText(/仍显示 v2 视角/)).toBeTruthy();
+    expect(screen.getAllByText(/分叉切换/).length).toBeGreaterThan(0);
+  });
+
+  it("检查点冲突时展示冲突与引用差异，不自动撤销确认", async () => {
+    const withCheckpoint: Snapshot = {
+      ...snapshot,
+      checkpoint: {
+        block_hash: "B1",
+        height: 1,
+        confirmed_at: "2026-09-29T01:00:00Z",
+        basis: { version: 1, tip_hash: "B4", tip_height: 4, chain: ["G", "B1"] },
+        status: "conflict",
+        conflict: {
+          rival_tip_hash: "A3",
+          rival_tip_height: 3,
+          rival_work: 999,
+          diverge_height: 0,
+          ref_changes: {
+            from_version: 2,
+            to_version: 2,
+            entries: [{ kind: "position_migrated", before: snapshot.tx_refs[0], after: snapshot.tx_refs[1] }],
+          },
+        },
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/api/state")) return { snapshot: withCheckpoint };
+        if (url.includes("/api/versions")) return { versions: [{ version: 2, created_at: "", tip_hash: "B4", tip_height: 4 }] };
+        return {};
+      },
+    })));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/存在越过检查点的竞争链/)).toBeTruthy());
+    expect(screen.getByText(/确认依据：版本 v1/)).toBeTruthy();
+    expect(screen.getByText(/试图改写检查点之前的已确认历史/)).toBeTruthy();
+    expect(screen.getByText("采纳竞争链（撤销原确认）")).toBeTruthy();
+    expect(screen.getByText("保留确认，建立独立研究线")).toBeTruthy();
+  });
 });

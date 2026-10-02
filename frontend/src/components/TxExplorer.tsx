@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Snapshot, TxPosition } from "../types";
+import { RANGE_LABEL } from "./BlockDetail";
 
 interface Props {
   snapshot: Snapshot;
@@ -67,7 +68,7 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
                 <div className="panel-empty">交易 {selectedTx} 不在当前索引版本（v{snapshot.version}）中。</div>
               )}
               <table className="data-table">
-                <thead><tr><th>高度</th><th>区块</th><th>块内序号</th><th>状态</th><th>确认数</th><th>分支</th></tr></thead>
+                <thead><tr><th>高度</th><th>区块</th><th>块内序号</th><th>状态</th><th>范围</th><th>确认数</th><th>分支</th></tr></thead>
                 <tbody>
                   {(selectedPositions ?? []).map((p) => (
                     <tr key={`${p.block_hash}-${p.index}`}>
@@ -75,6 +76,7 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
                       <td><button className="link-btn" onClick={() => onSelectBlock(p.block_hash)}>{p.block_hash}</button></td>
                       <td>{p.index}</td>
                       <td><span className={p.canonical ? "ok-text" : "reverted-text"}>{p.canonical ? "主链有效" : "旧分叉撤回"}</span></td>
+                      <td>{p.range ? <span className={`range-text-${p.range}`}>{RANGE_LABEL[p.range]}</span> : "-"}</td>
                       <td>{p.confirmations}</td>
                       <td>{p.branch_id}</td>
                     </tr>
@@ -94,6 +96,7 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
                       <span className={r.active ? "ok-text" : "warn-text"}>
                         {r.active ? "当前有效" : r.resolved ? "非当前链视角" : "目标未到达"}
                       </span>
+                      {r.scope && <span className={`range-text-${r.scope}`}>（{RANGE_LABEL[r.scope]}）</span>}
                     </div>
                     <div className="ref-detail">
                       所在区块{" "}

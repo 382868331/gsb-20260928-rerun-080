@@ -4,8 +4,60 @@ import (
 	"path/filepath"
 	"testing"
 
+	"chainresearch/internal/model"
 	"chainresearch/internal/sample"
 )
+
+func TestCheckpointAndResearchLinesPersistAcrossReopen(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := &model.Checkpoint{
+		BlockHash:   "A2",
+		Height:      2,
+		ConfirmedAt: "2026-09-29T00:00:00Z",
+		Basis: model.CheckpointBasis{
+			Version: 1, TipHash: "A3", TipHeight: 3,
+			Chain: []string{"G", "A1", "A2"},
+		},
+	}
+	if err := s.SetCheckpoint(cp); err != nil {
+		t.Fatal(err)
+	}
+	line := model.ResearchLine{ID: "rl-B4", Label: "独立研究", TipHash: "B4", TipHeight: 4}
+	if err := s.AddResearchLine(line); err != nil {
+		t.Fatal(err)
+	}
+	// 重复登记同一端点幂等。
+	if err := s.AddResearchLine(line); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s2.Checkpoint()
+	if got == nil || got.BlockHash != "A2" || len(got.Basis.Chain) != 3 || got.Basis.Chain[0] != "G" {
+		t.Fatalf("重开后检查点确认依据应可追踪: %+v", got)
+	}
+	lines := s2.ResearchLines()
+	if len(lines) != 1 || lines[0].TipHash != "B4" {
+		t.Fatalf("重开后独立研究线应保留: %+v", lines)
+	}
+	if err := s2.ClearCheckpoint(); err != nil {
+		t.Fatal(err)
+	}
+	s3, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s3.Checkpoint() != nil {
+		t.Fatalf("撤销后重开不应再有检查点: %+v", s3.Checkpoint())
+	}
+}
 
 func TestIdempotentImportAndResume(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")

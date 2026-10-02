@@ -32,6 +32,7 @@ button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
 .search { width: 100%; }
 .info { margin-top: 10px; padding: 8px 12px; background: #dcfce7; border: 1px solid #86efac; border-radius: 6px; }
 .error { margin-top: 10px; padding: 8px 12px; background: #fee2e2; border: 1px solid #fca5a5; border-radius: 6px; }
+.warn { margin-top: 10px; padding: 8px 12px; background: #fef9c3; border: 1px solid #fde047; border-radius: 6px; }
 .summary {
   display: flex; gap: 18px; flex-wrap: wrap; background: #fff; border: 1px solid #e4e4e7;
   border-radius: 8px; padding: 12px 14px; font-size: 13px;
@@ -46,6 +47,22 @@ button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
 }
 .status-badge.ok { background: #dbeafe; color: #1d4ed8; }
 .status-badge.reverted { background: #fef3c7; color: #b45309; }
+.status-badge.confirmed { background: #dcfce7; color: #15803d; }
+.status-badge.conflict { background: #fee2e2; color: #b91c1c; }
+.status-badge.range-confirmed { background: #dcfce7; color: #15803d; }
+.status-badge.range-tentative { background: #dbeafe; color: #1d4ed8; }
+.status-badge.range-conflict { background: #fee2e2; color: #b91c1c; }
+.range-text-confirmed { color: #15803d; font-weight: 600; }
+.range-text-tentative { color: #1d4ed8; font-weight: 600; }
+.range-text-conflict { color: #b91c1c; font-weight: 600; }
+.checkpoint-panel { margin-top: 14px; border: 1px solid #d4d4d8; border-radius: 8px; padding: 12px 16px; background: #fff; }
+.checkpoint-panel h2 { margin-top: 0; }
+.checkpoint-status-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.checkpoint-basis { color: #52525b; font-size: 13px; margin-bottom: 8px; }
+.conflict-box { border: 1px solid #fca5a5; background: #fef2f2; border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+.research-lines { margin-top: 10px; }
+.research-lines ul { margin: 4px 0; padding-left: 18px; }
+button.danger { background: #fee2e2; border: 1px solid #fca5a5; color: #b91c1c; }
 .kv { display: grid; grid-template-columns: 90px 1fr; gap: 4px 10px; font-size: 13px; margin: 10px 0; }
 .kv dt { color: #52525b; }
 .kv dd { margin: 0; word-break: break-all; }
