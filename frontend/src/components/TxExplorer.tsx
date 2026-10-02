@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Snapshot, TxPosition } from "../types";
+import { SCOPE_LABEL } from "../types";
 
 interface Props {
   snapshot: Snapshot;
@@ -67,7 +68,7 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
                 <div className="panel-empty">交易 {selectedTx} 不在当前索引版本（v{snapshot.version}）中。</div>
               )}
               <table className="data-table">
-                <thead><tr><th>高度</th><th>区块</th><th>块内序号</th><th>状态</th><th>确认数</th><th>分支</th></tr></thead>
+                <thead><tr><th>高度</th><th>区块</th><th>块内序号</th><th>状态</th><th>范围</th><th>确认数</th><th>分支</th></tr></thead>
                 <tbody>
                   {(selectedPositions ?? []).map((p) => (
                     <tr key={`${p.block_hash}-${p.index}`}>
@@ -75,6 +76,7 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
                       <td><button className="link-btn" onClick={() => onSelectBlock(p.block_hash)}>{p.block_hash}</button></td>
                       <td>{p.index}</td>
                       <td><span className={p.canonical ? "ok-text" : "reverted-text"}>{p.canonical ? "主链有效" : "旧分叉撤回"}</span></td>
+                      <td>{p.scope ? SCOPE_LABEL[p.scope] : "-"}</td>
                       <td>{p.confirmations}</td>
                       <td>{p.branch_id}</td>
                     </tr>
@@ -99,12 +101,14 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
                       所在区块{" "}
                       <button className="link-btn" onClick={() => onSelectBlock(r.from_block_hash)}>{r.from_block_hash}</button>
                       {" · "}{r.from_branch_id}{" · "}
+                      {r.from_scope ? `${SCOPE_LABEL[r.from_scope]} · ` : ""}
                       {r.from_canonical ? `主链视角 · ${r.from_confirmations} 确认` : "旧分叉视角 · 0 确认"}
                       {" · 目标 "}
                       {r.resolved ? (
                         <>
                           <button className="link-btn" onClick={() => onSelectBlock(r.to_block_hash!)}>{r.to_block_hash}</button>
                           {" · "}{r.to_branch_id}{" · "}
+                          {r.to_scope ? `${SCOPE_LABEL[r.to_scope]} · ` : ""}
                           {r.to_canonical ? `主链 ${r.to_confirmations} 确认` : "旧分叉 · 0 确认"}
                         </>
                       ) : (

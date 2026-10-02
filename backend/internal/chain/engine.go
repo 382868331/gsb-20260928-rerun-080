@@ -12,7 +12,12 @@ import (
 // 以端点 Hash 字典序较小者为准，保证结果确定可复现。
 // 新主链产生后，旧分叉区块 canonical=false 且 confirmations=0，
 // 但仍保留在快照中可追溯；交易位置与确认状态随之整体重算。
-func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.VersionSnapshot {
+//
+// 若研究者已确认检查点，则主链必须是经过检查点区块的链：
+// 检查点及之前为确认范围，之后为暂定范围（可继续随分叉更新）；
+// 任何不经过检查点的替代链（即使累计工作量更高）只记为冲突，
+// 不自动撤销原确认，由研究者决定是否建立独立研究。
+func BuildSnapshot(blocks []model.Block, nextVersion int64, label string, checkpoints []model.Checkpoint, resolutions map[string]string) model.VersionSnapshot {
 	snap := model.VersionSnapshot{
 		Version:   nextVersion,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -20,6 +25,7 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 		Blocks:    []model.BlockView{},
 		TxIndex:   []model.TxPosition{},
 		TxRefs:    []model.TxRef{},
+		Conflicts: []model.Conflict{},
 	}
 	if len(blocks) == 0 {
 		return snap
@@ -57,6 +63,59 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 		resolve(h)
 	}
 
+	// 生效检查点：已确认检查点中高度最高者（高度由链接关系计算）。
+	var cp *model.Checkpoint
+	var cpHeight int64
+	for i := range checkpoints {
+		c := checkpoints[i]
+		if _, ok := byHash[c.Hash]; !ok {
+			continue
+		}
+		h := heightOf[c.Hash]
+		if cp == nil || h > cpHeight || (h == cpHeight && c.Hash < cp.Hash) {
+			cpCopy := c
+			cp = &cpCopy
+			cpHeight = h
+		}
+	}
+	if cp != nil {
+		snap.Checkpoint = &model.CheckpointView{
+			Hash:        cp.Hash,
+			Height:      cpHeight,
+			Note:        cp.Note,
+			ConfirmedAt: cp.ConfirmedAt,
+		}
+	}
+
+	// 判断 from 沿父链回溯是否经过 target。
+	ancestorCache := map[string]bool{}
+	descendsFrom := func(from, target string) bool {
+		if from == target {
+			return true
+		}
+		key := from + "|" + target
+		if v, ok := ancestorCache[key]; ok {
+			return v
+		}
+		result := false
+		for cur := from; ; {
+			if cur == target {
+				result = true
+				break
+			}
+			b, ok := byHash[cur]
+			if !ok {
+				break
+			}
+			if _, parentExists := byHash[b.PrevHash]; !parentExists {
+				break
+			}
+			cur = b.PrevHash
+		}
+		ancestorCache[key] = result
+		return result
+	}
+
 	// 从每个端点回溯，选出主链端点。
 	type chainInfo struct {
 		tip  string
@@ -90,7 +149,18 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 		}
 		return candidates[i].tip < candidates[j].tip
 	})
-	tipHash := candidates[0].tip
+	naturalTip := candidates[0].tip
+	tipHash := naturalTip
+	// 有检查点时，主链端点必须是经过检查点的候选中工作量最大者；
+	// 越过检查点的更高工作量链不自动成为主链，只记为冲突。
+	if cp != nil && !descendsFrom(naturalTip, cp.Hash) {
+		for _, c := range candidates {
+			if descendsFrom(c.tip, cp.Hash) {
+				tipHash = c.tip
+				break
+			}
+		}
+	}
 	snap.TipHash = tipHash
 	snap.TipHeight = heightOf[tipHash]
 
@@ -133,6 +203,73 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 		return id
 	}
 
+	// 范围标记：确认范围（检查点及之前的主链）、暂定范围（检查点之后
+	// 的主链，可继续随分叉更新）、冲突范围（越过检查点的替代链）、
+	// 普通被撤回分叉。
+	scopeOf := func(h string) string {
+		if canonical[h] {
+			if cp != nil && heightOf[h] <= cpHeight {
+				return model.ScopeConfirmed
+			}
+			return model.ScopeTentative
+		}
+		if cp != nil && !descendsFrom(h, cp.Hash) {
+			return model.ScopeConflict
+		}
+		return model.ScopeReverted
+	}
+	// 汇总越过检查点的替代链冲突：按分叉分组，记录端点、高度与
+	// 累计工作量；状态来自研究者的裁决（pending/independent）。
+	if cp != nil {
+		type conflictInfo struct {
+			tip    string
+			height int64
+			work   int64
+		}
+		byBranch := map[string]*conflictInfo{}
+		for _, tip := range tipList {
+			if descendsFrom(tip, cp.Hash) {
+				continue
+			}
+			branch := branchOf(tip)
+			var totalWork int64
+			for cur := tip; ; {
+				b, ok := byHash[cur]
+				if !ok {
+					break
+				}
+				totalWork += b.Work
+				if _, parentExists := byHash[b.PrevHash]; !parentExists {
+					break
+				}
+				cur = b.PrevHash
+			}
+			info := byBranch[branch]
+			if info == nil || heightOf[tip] > info.height {
+				byBranch[branch] = &conflictInfo{tip: tip, height: heightOf[tip], work: totalWork}
+			}
+		}
+		branches := make([]string, 0, len(byBranch))
+		for branch := range byBranch {
+			branches = append(branches, branch)
+		}
+		sort.Strings(branches)
+		for _, branch := range branches {
+			info := byBranch[branch]
+			status := "pending"
+			if resolutions[branch] == "independent" {
+				status = "independent"
+			}
+			snap.Conflicts = append(snap.Conflicts, model.Conflict{
+				ID:          branch,
+				RivalTip:    info.tip,
+				RivalHeight: info.height,
+				RivalWork:   info.work,
+				Status:      status,
+			})
+		}
+	}
+
 	blockHashList := make([]string, 0, len(byHash))
 	for h := range byHash {
 		blockHashList = append(blockHashList, h)
@@ -157,6 +294,7 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 			Height:        heightOf[h],
 			Canonical:     isCanon,
 			BranchID:      branchOf(h),
+			Scope:         scopeOf(h),
 			Confirmations: conf,
 			Work:          b.Work,
 			Miner:         b.Miner,
@@ -171,6 +309,7 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 				Index:         i,
 				Height:        heightOf[h],
 				Canonical:     isCanon,
+				Scope:         view.Scope,
 				Confirmations: conf,
 				BranchID:      view.BranchID,
 			})
@@ -231,6 +370,7 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 					FromBlockHash: h,
 					FromBranchID:  branchOf(h),
 					FromCanonical: canonical[h],
+					FromScope:     scopeOf(h),
 				}
 				if canonical[h] {
 					ref.FromConfirmations = snap.TipHeight - heightOf[h] + 1
@@ -240,6 +380,7 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string) model.
 					ref.ToBlockHash = target.BlockHash
 					ref.ToBranchID = target.BranchID
 					ref.ToCanonical = target.Canonical
+					ref.ToScope = target.Scope
 					ref.ToConfirmations = target.Confirmations
 				}
 				// 仅当引用方与目标都在当前主链上时才算当前有效；

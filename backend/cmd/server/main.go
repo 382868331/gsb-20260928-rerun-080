@@ -23,7 +23,7 @@ func main() {
 	// 但若历史上无快照而已有区块（数据文件被外部放入），补建一次。
 	if len(s.AllBlocks()) > 0 {
 		if _, ok := s.LatestSnapshot(); !ok {
-			snap := chain.BuildSnapshot(s.AllBlocks(), 1, "启动补建")
+			snap := chain.BuildSnapshot(s.AllBlocks(), 1, "启动补建", s.Checkpoints(), s.Resolutions())
 			if err := s.SaveSnapshot(snap); err != nil {
 				log.Fatalf("补建索引失败: %v", err)
 			}

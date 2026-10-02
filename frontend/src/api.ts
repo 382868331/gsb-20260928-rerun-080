@@ -19,8 +19,19 @@ export function fetchState(version?: number): Promise<{ snapshot: Snapshot }> {
     snap.blocks = (snap.blocks ?? []).map((b) => ({ ...b, txs: b.txs ?? [] }));
     snap.tx_index = snap.tx_index ?? [];
     snap.tx_refs = snap.tx_refs ?? [];
+    snap.conflicts = snap.conflicts ?? [];
     return { snapshot: snap };
   });
+}
+
+// 导入、确认检查点、裁决冲突的响应都直接携带最新完整快照，
+// 前端以此为准同步各区域与版本选择器，避免主体与选择器版本脱节。
+export function normalizeSnapshot(snap: Snapshot): Snapshot {
+  snap.blocks = (snap.blocks ?? []).map((b) => ({ ...b, txs: b.txs ?? [] }));
+  snap.tx_index = snap.tx_index ?? [];
+  snap.tx_refs = snap.tx_refs ?? [];
+  snap.conflicts = snap.conflicts ?? [];
+  return snap;
 }
 
 export function fetchVersions(): Promise<{ versions: VersionMeta[] }> {
@@ -43,4 +54,18 @@ export function importBlocks(blocks: RawBlock[], label: string): Promise<ImportR
 
 export function fetchSample(): Promise<{ blocks: RawBlock[] }> {
   return req("/api/sample");
+}
+
+export function confirmCheckpoint(hash: string, note: string): Promise<{ state: Snapshot }> {
+  return req("/api/checkpoint", {
+    method: "POST",
+    body: JSON.stringify({ hash, note }),
+  });
+}
+
+export function resolveConflict(id: string): Promise<{ state: Snapshot }> {
+  return req("/api/conflicts/resolve", {
+    method: "POST",
+    body: JSON.stringify({ id, action: "independent" }),
+  });
 }

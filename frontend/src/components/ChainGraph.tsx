@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { ReactFlow, Background, Controls } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { BlockView } from "../types";
+import { SCOPE_LABEL } from "../types";
 import { layoutBlocks } from "../chainLayout";
 
 interface Props {
@@ -48,24 +49,44 @@ export function ChainGraph({ blocks, selectedBlock, onSelect }: Props) {
 }
 
 function blockLabel(b: BlockView, selected: boolean) {
+  const scope = b.scope ?? (b.canonical ? "tentative" : "reverted");
   return (
     <div style={{ padding: 4, fontSize: 12, textAlign: "left", width: NODE_W - 16, outline: selected ? "2px solid #0f172a" : "none", borderRadius: 6 }}>
       <div style={{ fontWeight: 700 }}>{b.hash} #{b.height}</div>
-      <div style={{ color: b.canonical ? "#1d4ed8" : "#b45309", fontWeight: 600 }}>
-        {b.canonical ? `主链 · ${b.confirmations} 确认` : `已撤回旧分叉 · ${b.branch_id}`}
+      <div style={{ color: scopeColor(scope), fontWeight: 600 }}>
+        {b.canonical ? `${SCOPE_LABEL[scope]} · ${b.confirmations} 确认` : `${SCOPE_LABEL[scope]} · ${b.branch_id}`}
       </div>
       <div style={{ color: "#52525b" }}>{b.txs.length} 笔交易 · work {b.work}</div>
     </div>
   );
 }
 
+function scopeColor(scope: string): string {
+  switch (scope) {
+    case "confirmed":
+      return "#15803d";
+    case "tentative":
+      return "#1d4ed8";
+    case "conflict":
+      return "#b91c1c";
+    default:
+      return "#b45309";
+  }
+}
+
 function nodeStyle(b: BlockView, selected: boolean): React.CSSProperties {
+  const scope = b.scope ?? (b.canonical ? "tentative" : "reverted");
+  const bg =
+    scope === "confirmed" ? "#dcfce7"
+    : scope === "tentative" ? "#dbeafe"
+    : scope === "conflict" ? "#fee2e2"
+    : "#fef3c7";
   return {
     width: NODE_W,
     height: NODE_H,
     borderRadius: 8,
     border: selected ? "2px solid #0f172a" : "1px solid #cbd5e1",
-    background: b.canonical ? "#dbeafe" : "#fef3c7",
+    background: bg,
     padding: 0,
   };
 }

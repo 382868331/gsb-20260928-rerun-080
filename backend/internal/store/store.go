@@ -20,17 +20,24 @@ type Store struct {
 	path      string
 	blocks    map[string]model.Block
 	snapshots []model.VersionSnapshot
+	// checkpoints 是研究者明确确认的链检查点（按确认时间追加）。
+	checkpoints []model.Checkpoint
+	// resolutions 记录冲突裁决：冲突 ID -> "independent"（建立独立研究）。
+	resolutions map[string]string
 }
 
 type persisted struct {
-	Blocks    []model.Block           `json:"blocks"`
-	Snapshots []model.VersionSnapshot `json:"snapshots"`
+	Blocks      []model.Block           `json:"blocks"`
+	Snapshots   []model.VersionSnapshot `json:"snapshots"`
+	Checkpoints []model.Checkpoint      `json:"checkpoints,omitempty"`
+	Resolutions map[string]string       `json:"resolutions,omitempty"`
 }
 
 func Open(dir string) (*Store, error) {
 	s := &Store{
-		path:   filepath.Join(dir, "store.json"),
-		blocks: map[string]model.Block{},
+		path:        filepath.Join(dir, "store.json"),
+		blocks:      map[string]model.Block{},
+		resolutions: map[string]string{},
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -45,6 +52,10 @@ func Open(dir string) (*Store, error) {
 			s.blocks[b.Hash] = b
 		}
 		s.snapshots = p.Snapshots
+		s.checkpoints = p.Checkpoints
+		if p.Resolutions != nil {
+			s.resolutions = p.Resolutions
+		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -142,6 +153,55 @@ func (s *Store) AllBlocks() []model.Block {
 	return out
 }
 
+// AddCheckpoint 追加一个研究者确认的链检查点。区块必须已索引；
+// 同一区块重复确认幂等（更新备注与时间，不产生重复记录）。
+func (s *Store) AddCheckpoint(hash, note, confirmedAt string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.blocks[hash]; !ok {
+		return fmt.Errorf("区块 %s 尚未索引，无法确认为检查点", hash)
+	}
+	for i := range s.checkpoints {
+		if s.checkpoints[i].Hash == hash {
+			s.checkpoints[i].Note = note
+			s.checkpoints[i].ConfirmedAt = confirmedAt
+			return s.flushLocked()
+		}
+	}
+	s.checkpoints = append(s.checkpoints, model.Checkpoint{
+		Hash:        hash,
+		Note:        note,
+		ConfirmedAt: confirmedAt,
+	})
+	return s.flushLocked()
+}
+
+func (s *Store) Checkpoints() []model.Checkpoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Checkpoint, len(s.checkpoints))
+	copy(out, s.checkpoints)
+	return out
+}
+
+// ResolveConflict 记录研究者对冲突的裁决（如建立独立研究）。
+func (s *Store) ResolveConflict(id, action string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolutions[id] = action
+	return s.flushLocked()
+}
+
+func (s *Store) Resolutions() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]string, len(s.resolutions))
+	for k, v := range s.resolutions {
+		out[k] = v
+	}
+	return out
+}
+
 func (s *Store) flushLocked() error {
 	blocks := make([]model.Block, 0, len(s.blocks))
 	for _, b := range s.blocks {
@@ -149,8 +209,10 @@ func (s *Store) flushLocked() error {
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].Hash < blocks[j].Hash })
 	p := persisted{
-		Blocks:    blocks,
-		Snapshots: s.snapshots,
+		Blocks:      blocks,
+		Snapshots:   s.snapshots,
+		Checkpoints: s.checkpoints,
+		Resolutions: s.resolutions,
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {

@@ -28,8 +28,8 @@ func entriesByKind(diff model.RefDiff, kind string) []model.RefDiffEntry {
 }
 
 func TestDiffRefsAcrossForkSwitch(t *testing.T) {
-	snap1 := BuildSnapshot(oldChainBlocks(), 1, "旧链")
-	snap2 := BuildSnapshot(sample.Blocks(), 2, "分叉切换")
+	snap1 := BuildSnapshot(oldChainBlocks(), 1, "旧链", nil, nil)
+	snap2 := BuildSnapshot(sample.Blocks(), 2, "分叉切换", nil, nil)
 	diff := DiffRefs(snap1, snap2)
 	if diff.FromVersion != 1 || diff.ToVersion != 2 {
 		t.Fatalf("差异版本号错误: %+v", diff)
@@ -78,13 +78,13 @@ func TestDiffRefsAcrossForkSwitch(t *testing.T) {
 
 func TestDiffRefsConfirmationsOnly(t *testing.T) {
 	blocks := oldChainBlocks()
-	snap1 := BuildSnapshot(blocks, 1, "")
+	snap1 := BuildSnapshot(blocks, 1, "", nil, nil)
 	// 在同一主链上延长一个区块：引用位置与目标不变，仅确认数变化。
 	tip := model.Block{
 		Hash: "A4", PrevHash: "A3", Work: 10,
 		Txs: []model.Transaction{{TxID: "txA4", Outputs: []model.TxOutput{{Value: 5}}}},
 	}
-	snap2 := BuildSnapshot(append(append([]model.Block{}, blocks...), tip), 2, "")
+	snap2 := BuildSnapshot(append(append([]model.Block{}, blocks...), tip), 2, "", nil, nil)
 	diff := DiffRefs(snap1, snap2)
 
 	confOnly := entriesByKind(diff, "confirmations_only")
@@ -109,7 +109,7 @@ func TestDiffRefsConfirmationsOnly(t *testing.T) {
 }
 
 func TestDiffRefsIdenticalVersionsEmpty(t *testing.T) {
-	snap := BuildSnapshot(sample.Blocks(), 1, "")
+	snap := BuildSnapshot(sample.Blocks(), 1, "", nil, nil)
 	diff := DiffRefs(snap, snap)
 	if len(diff.Entries) != 0 {
 		t.Fatalf("相同版本差异应为空: %+v", diff.Entries)

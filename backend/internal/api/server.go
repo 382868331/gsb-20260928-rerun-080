@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"chainresearch/internal/chain"
 	"chainresearch/internal/model"
@@ -30,6 +31,21 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/refdiff", s.handleRefDiff)
 	s.Mux.HandleFunc("/api/import", s.handleImport)
 	s.Mux.HandleFunc("/api/sample", s.handleSample)
+	s.Mux.HandleFunc("/api/checkpoint", s.handleCheckpoint)
+	s.Mux.HandleFunc("/api/conflicts/resolve", s.handleConflictResolve)
+}
+
+// rebuild 依据当前全部区块、检查点与冲突裁决生成新版本快照并落盘。
+func (s *Server) rebuild(label string) (model.VersionSnapshot, error) {
+	next := int64(1)
+	if latest, ok := s.Store.LatestSnapshot(); ok {
+		next = latest.Version + 1
+	}
+	snap := chain.BuildSnapshot(s.Store.AllBlocks(), next, label, s.Store.Checkpoints(), s.Store.Resolutions())
+	if err := s.Store.SaveSnapshot(snap); err != nil {
+		return model.VersionSnapshot{}, err
+	}
+	return snap, nil
 }
 
 type stateResponse struct {
@@ -64,7 +80,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	} else {
 		latest, ok := s.Store.LatestSnapshot()
 		if !ok {
-			snap = chain.BuildSnapshot(s.Store.AllBlocks(), 0, "")
+			snap = chain.BuildSnapshot(s.Store.AllBlocks(), 0, "", s.Store.Checkpoints(), s.Store.Resolutions())
 		} else {
 			snap = latest
 		}
@@ -157,20 +173,90 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 	var snap model.VersionSnapshot
 	if result.Added > 0 {
-		next := int64(1)
-		if latest, ok := s.Store.LatestSnapshot(); ok {
-			next = latest.Version + 1
-		}
-		snap = chain.BuildSnapshot(s.Store.AllBlocks(), next, strings.TrimSpace(req.Label))
-		if err := s.Store.SaveSnapshot(snap); err != nil {
+		snap, err = s.rebuild(strings.TrimSpace(req.Label))
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		log.Printf("索引版本 %d 已生成: +%d 区块, 跳过 %d", next, result.Added, result.Skipped)
+		log.Printf("索引版本 %d 已生成: +%d 区块, 跳过 %d", snap.Version, result.Added, result.Skipped)
 	} else {
 		snap, _ = s.Store.LatestSnapshot()
 	}
 	writeJSON(w, importResponse{Added: result.Added, Skipped: result.Skipped, State: snap})
+}
+
+type checkpointRequest struct {
+	Hash string `json:"hash"`
+	Note string `json:"note"`
+}
+
+// handleCheckpoint 由研究者明确确认链检查点：对应区块及其之前的
+// 历史范围成为确认范围。确认后重建索引版本，使各区域（拓扑、交易、
+// 引用）在同一新版本中体现检查点；GET 返回全部已确认检查点。
+func (s *Server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]any{"checkpoints": s.Store.Checkpoints()})
+	case http.MethodPost:
+		var req checkpointRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "请求体不是有效 JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.Hash) == "" {
+			http.Error(w, "缺少检查点区块 hash", http.StatusBadRequest)
+			return
+		}
+		confirmedAt := time.Now().UTC().Format(time.RFC3339)
+		if err := s.Store.AddCheckpoint(req.Hash, strings.TrimSpace(req.Note), confirmedAt); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		snap, err := s.rebuild("确认检查点 " + req.Hash)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("检查点已确认: %s（版本 %d）", req.Hash, snap.Version)
+		writeJSON(w, map[string]any{"state": snap})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+type conflictResolveRequest struct {
+	ID     string `json:"id"`
+	Action string `json:"action"`
+}
+
+// handleConflictResolve 由研究者裁决越过检查点的冲突：
+// action=independent 表示为该替代链建立独立研究。裁决只改变冲突的
+// 标注状态，不会撤销已确认的检查点范围。
+func (s *Server) handleConflictResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req conflictResolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "请求体不是有效 JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ID == "" || req.Action != "independent" {
+		http.Error(w, "需要冲突 id 且 action 目前仅支持 independent", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.ResolveConflict(req.ID, req.Action); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	snap, err := s.rebuild("冲突裁决 " + req.ID + " -> " + req.Action)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("冲突 %s 已裁决为 %s（版本 %d）", req.ID, req.Action, snap.Version)
+	writeJSON(w, map[string]any{"state": snap})
 }
 
 func (s *Server) handleSample(w http.ResponseWriter, r *http.Request) {

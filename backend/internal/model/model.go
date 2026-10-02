@@ -46,7 +46,47 @@ type VersionSnapshot struct {
 	Blocks    []BlockView  `json:"blocks"`
 	TxIndex   []TxPosition `json:"tx_index"`
 	TxRefs    []TxRef      `json:"tx_refs"`
+	// Checkpoint 是该版本生效的研究者确认检查点（nil 表示尚未确认）。
+	Checkpoint *CheckpointView `json:"checkpoint,omitempty"`
+	// Conflicts 记录越过检查点的替代链冲突，保留待研究者裁决。
+	Conflicts []Conflict `json:"conflicts"`
 }
+
+// Checkpoint 是研究者明确确认的链检查点：对应区块及其之前
+// 的历史范围视为已确认，后续分叉变化不得自动撤销。
+type Checkpoint struct {
+	Hash        string `json:"hash"`
+	Note        string `json:"note,omitempty"`
+	ConfirmedAt string `json:"confirmed_at"`
+}
+
+// CheckpointView 是快照中生效检查点的视图，附带由链接关系计算的高度。
+type CheckpointView struct {
+	Hash        string `json:"hash"`
+	Height      int64  `json:"height"`
+	Note        string `json:"note,omitempty"`
+	ConfirmedAt string `json:"confirmed_at"`
+}
+
+// Conflict 描述一条越过检查点的替代链：它不从检查点区块延伸，
+// 与已确认历史矛盾。系统不自动撤销原确认，仅保留冲突及其引用差异，
+// 由研究者决定是否建立独立研究（Status=independent）。
+type Conflict struct {
+	ID          string `json:"id"`
+	RivalTip    string `json:"rival_tip"`
+	RivalHeight int64  `json:"rival_height"`
+	RivalWork   int64  `json:"rival_work"`
+	Status      string `json:"status"` // pending | independent
+}
+
+// 范围标记：confirmed=检查点确认范围，tentative=检查点之后的暂定范围，
+// conflict=越过检查点的冲突范围，reverted=普通被撤回分叉。
+const (
+	ScopeConfirmed = "confirmed"
+	ScopeTentative = "tentative"
+	ScopeConflict  = "conflict"
+	ScopeReverted  = "reverted"
+)
 
 type BlockView struct {
 	Hash          string      `json:"hash"`
@@ -54,6 +94,7 @@ type BlockView struct {
 	Height        int64       `json:"height"`
 	Canonical     bool        `json:"canonical"`
 	BranchID      string      `json:"branch_id"`
+	Scope         string      `json:"scope"`
 	Confirmations int64       `json:"confirmations"`
 	Work          int64       `json:"work"`
 	Miner         string      `json:"miner,omitempty"`
@@ -75,6 +116,7 @@ type TxPosition struct {
 	Index         int    `json:"index"`
 	Height        int64  `json:"height"`
 	Canonical     bool   `json:"canonical"`
+	Scope         string `json:"scope"`
 	Confirmations int64  `json:"confirmations"`
 	BranchID      string `json:"branch_id"`
 }
@@ -93,10 +135,12 @@ type TxRef struct {
 	FromBlockHash     string `json:"from_block_hash"`
 	FromBranchID      string `json:"from_branch_id"`
 	FromCanonical     bool   `json:"from_canonical"`
+	FromScope         string `json:"from_scope"`
 	FromConfirmations int64  `json:"from_confirmations"`
 	ToBlockHash       string `json:"to_block_hash,omitempty"`
 	ToBranchID        string `json:"to_branch_id,omitempty"`
 	ToCanonical       bool   `json:"to_canonical"`
+	ToScope           string `json:"to_scope,omitempty"`
 	ToConfirmations   int64  `json:"to_confirmations"`
 	Active            bool   `json:"active"`
 }

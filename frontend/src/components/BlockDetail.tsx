@@ -1,19 +1,27 @@
-import type { BlockView } from "../types";
+import type { BlockView, CheckpointView } from "../types";
+import { SCOPE_LABEL } from "../types";
 
 interface Props {
   block: BlockView | null;
+  checkpoint: CheckpointView | null;
   onSelectTx: (txid: string) => void;
+  onConfirmCheckpoint: (hash: string) => void;
 }
 
-export function BlockDetail({ block, onSelectTx }: Props) {
+export function BlockDetail({ block, checkpoint, onSelectTx, onConfirmCheckpoint }: Props) {
   if (!block) {
     return <div className="panel-empty">点击拓扑图中的区块查看详情。</div>;
   }
+  const scope = block.scope ?? (block.canonical ? "tentative" : "reverted");
+  const isCheckpoint = checkpoint?.hash === block.hash;
   return (
     <div>
-      <div className={`status-badge ${block.canonical ? "ok" : "reverted"}`}>
-        {block.canonical ? `主链 · ${block.confirmations} 个确认` : `已撤回（${block.branch_id}）· 确认数 0`}
+      <div className={`status-badge ${block.canonical ? "ok" : scope === "conflict" ? "conflict" : "reverted"}`}>
+        {block.canonical
+          ? `${SCOPE_LABEL[scope]} · ${block.confirmations} 个确认`
+          : `${SCOPE_LABEL[scope]}（${block.branch_id}）· 确认数 0`}
       </div>
+      {isCheckpoint && <div className="status-badge checkpoint">研究者确认的检查点</div>}
       <dl className="kv">
         <dt>区块 Hash</dt><dd>{block.hash}</dd>
         <dt>高度</dt><dd>{block.height}</dd>
@@ -22,6 +30,13 @@ export function BlockDetail({ block, onSelectTx }: Props) {
         <dt>工作量</dt><dd>{block.work}</dd>
         <dt>时间</dt><dd>{block.timestamp || "-"}</dd>
       </dl>
+      {block.canonical && !isCheckpoint && (
+        <div className="row">
+          <button onClick={() => onConfirmCheckpoint(block.hash)}>
+            确认为链检查点（此前历史进入确认范围）
+          </button>
+        </div>
+      )}
       <h4>块内交易（{block.txs.length}）</h4>
       <table className="data-table">
         <thead><tr><th>#</th><th>交易 ID</th><th>备注</th></tr></thead>
@@ -38,3 +53,4 @@ export function BlockDetail({ block, onSelectTx }: Props) {
     </div>
   );
 }
+

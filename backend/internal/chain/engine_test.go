@@ -24,7 +24,7 @@ func TestReorgRevertsOldChainAndKeepsTrace(t *testing.T) {
 			old = append(old, b)
 		}
 	}
-	snap1 := BuildSnapshot(old, 1, "旧链")
+	snap1 := BuildSnapshot(old, 1, "旧链", nil, nil)
 	if snap1.TipHash != "A3" {
 		t.Fatalf("初始主链端点应为 A3，实际 %s", snap1.TipHash)
 	}
@@ -40,7 +40,7 @@ func TestReorgRevertsOldChainAndKeepsTrace(t *testing.T) {
 	}
 
 	// 导入完整数据集：B 链工作量更高，成为新主链，旧结果被撤回。
-	snap2 := BuildSnapshot(blocks, 2, "分叉切换")
+	snap2 := BuildSnapshot(blocks, 2, "分叉切换", nil, nil)
 	if snap2.TipHash != "B4" {
 		t.Fatalf("切换后主链端点应为 B4，实际 %s", snap2.TipHash)
 	}
@@ -79,7 +79,7 @@ func TestReorgRevertsOldChainAndKeepsTrace(t *testing.T) {
 }
 
 func TestDuplicateTransactionHasMultiplePositions(t *testing.T) {
-	snap := BuildSnapshot(sample.Blocks(), 2, "")
+	snap := BuildSnapshot(sample.Blocks(), 2, "", nil, nil)
 	var positions []model.TxPosition
 	for _, p := range snap.TxIndex {
 		if p.TxID == "txA" {
@@ -104,7 +104,7 @@ func TestDuplicateTransactionHasMultiplePositions(t *testing.T) {
 }
 
 func TestTxReferencesResolved(t *testing.T) {
-	snap := BuildSnapshot(sample.Blocks(), 2, "")
+	snap := BuildSnapshot(sample.Blocks(), 2, "", nil, nil)
 	var found *model.TxRef
 	for i := range snap.TxRefs {
 		r := &snap.TxRefs[i]
@@ -118,7 +118,7 @@ func TestTxReferencesResolved(t *testing.T) {
 }
 
 func TestTxRefsCarryBlockBranchAndValidity(t *testing.T) {
-	snap := BuildSnapshot(sample.Blocks(), 2, "")
+	snap := BuildSnapshot(sample.Blocks(), 2, "", nil, nil)
 	refsByFrom := map[string][]model.TxRef{}
 	for _, r := range snap.TxRefs {
 		refsByFrom[r.FromTxID] = append(refsByFrom[r.FromTxID], r)
@@ -181,7 +181,7 @@ func TestTxRefsCarryBlockBranchAndValidity(t *testing.T) {
 	}
 
 	// 重复构建（等价于重复导入重放）不应产生重复引用。
-	snapAgain := BuildSnapshot(sample.Blocks(), 3, "")
+	snapAgain := BuildSnapshot(sample.Blocks(), 3, "", nil, nil)
 	if len(snapAgain.TxRefs) != len(snap.TxRefs) {
 		t.Fatalf("重复构建引用数应一致: %d != %d", len(snapAgain.TxRefs), len(snap.TxRefs))
 	}

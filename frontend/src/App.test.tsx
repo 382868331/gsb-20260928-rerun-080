@@ -35,6 +35,7 @@ const snapshot: Snapshot = {
       active: true,
     },
   ],
+  conflicts: [],
 };
 
 beforeEach(() => {
@@ -90,5 +91,68 @@ describe("App 分叉快照渲染", () => {
     })));
     render(<App />);
     await waitFor(() => expect(screen.getByText(/当前没有索引版本/)).toBeTruthy());
+  });
+});
+
+describe("版本一致性", () => {
+  it("导入完成后顶部选择器与主体共同指向新版本", async () => {
+    const imported: Snapshot = { ...snapshot, version: 3, label: "新导入" };
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/api/import")) return { added: 1, skipped: 0, state: imported };
+        if (url.includes("/api/state")) return { snapshot };
+        if (url.includes("/api/versions")) {
+          return { versions: [
+            { version: 2, created_at: "", tip_hash: "B4", tip_height: 4 },
+            { version: 3, created_at: "", tip_hash: "B4", tip_height: 4, label: "新导入" },
+          ] };
+        }
+        return {};
+      },
+      text: async () => "",
+      status: 200,
+    })));
+    render(<App />);
+    await waitFor(() => expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0));
+    // 粘贴任意合法区块数组并导入。
+    fireEvent.change(screen.getByPlaceholderText(/\[\{"hash"/), {
+      target: { value: JSON.stringify([{ hash: "X", prev_hash: "", txs: [] }]) },
+    });
+    fireEvent.click(screen.getByText("导入并重建索引"));
+    // 主体与选择器都应指向 v3。
+    await waitFor(() => expect(screen.getAllByText(/v3/).length).toBeGreaterThan(0));
+    const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    expect(select.value).toBe("3");
+    expect(screen.getByText(/导入完成：新增 1/)).toBeTruthy();
+  });
+
+  it("切换版本失败时保留原视角并显示未完成状态", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("/api/state?v=3")) {
+        return { ok: false, status: 404, text: async () => "版本不存在", json: async () => ({}) };
+      }
+      return {
+        ok: true,
+        json: async () => {
+          if (url.includes("/api/state")) return { snapshot };
+          if (url.includes("/api/versions")) {
+            return { versions: [
+              { version: 2, created_at: "", tip_hash: "B4", tip_height: 4 },
+              { version: 3, created_at: "", tip_hash: "B4", tip_height: 4 },
+            ] };
+          }
+          return {};
+        },
+      };
+    }));
+    render(<App />);
+    await waitFor(() => expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0));
+    fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "3" } });
+    // 切换失败：提示未完成，选择器与主体仍对应 v2。
+    await waitFor(() => expect(screen.getByText(/切换到 v3 未完成/)).toBeTruthy());
+    const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    expect(select.value).toBe("2");
+    expect(screen.getByText(/当前仍显示 v2/)).toBeTruthy();
   });
 });
