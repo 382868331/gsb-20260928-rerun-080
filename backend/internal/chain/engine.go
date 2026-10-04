@@ -214,6 +214,16 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string, checkp
 			return model.ScopeTentative
 		}
 		if cp != nil && !descendsFrom(h, cp.Hash) {
+			for cur := h; ; {
+				b := byHash[cur]
+				if b.PrevHash == "" {
+					break
+				}
+				if _, parentExists := byHash[b.PrevHash]; !parentExists {
+					return model.ScopePending
+				}
+				cur = b.PrevHash
+			}
 			return model.ScopeConflict
 		}
 		return model.ScopeReverted
@@ -229,6 +239,21 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string, checkp
 		byBranch := map[string]*conflictInfo{}
 		for _, tip := range tipList {
 			if descendsFrom(tip, cp.Hash) {
+				continue
+			}
+			hasMissingParent := false
+			for cur := tip; ; {
+				b, ok := byHash[cur]
+				if !ok || b.PrevHash == "" {
+					break
+				}
+				if _, parentExists := byHash[b.PrevHash]; !parentExists {
+					hasMissingParent = true
+					break
+				}
+				cur = b.PrevHash
+			}
+			if hasMissingParent {
 				continue
 			}
 			branch := branchOf(tip)

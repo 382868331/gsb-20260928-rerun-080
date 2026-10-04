@@ -18,7 +18,7 @@ export function BlockDetail({ block, checkpoint, onSelectTx, onConfirmCheckpoint
   const isCheckpoint = checkpoint?.hash === block.hash;
   return (
     <div>
-      <div className={`status-badge ${block.canonical ? "ok" : scope === "conflict" ? "conflict" : "reverted"}`}>
+      <div className={`status-badge ${block.canonical ? "ok" : scope === "conflict" ? "conflict" : scope === "pending" ? "pending" : "reverted"}`}>
         {block.canonical
           ? `${SCOPE_LABEL[scope]} · ${block.confirmations} 个确认`
           : `${SCOPE_LABEL[scope]}（${block.branch_id}）· 确认数 0`}

@@ -50,7 +50,13 @@ export function LinePanel({ lines, currentLine, snapshot, onSelectLine, onCreate
     if (!comparison) return;
     setBusy(true);
     try {
-      const { state } = await mergeLines(comparison.id, mergeName, keep, [...accept]);
+      const eligible = new Set([
+        ...(keep === "a"
+          ? [...comparison.compatible_a, ...comparison.conflicts.filter((c) => c.in_line === comparison.line_a).map((c) => c.hash)]
+          : [...comparison.compatible_b, ...comparison.conflicts.filter((c) => c.in_line === comparison.line_b).map((c) => c.hash)]),
+      ]);
+      const chosen = [...accept].filter((h) => eligible.has(h));
+      const { state } = await mergeLines(comparison.id, mergeName, keep, chosen);
       onLineState(
         state,
         `已合并 ${comparison.line_a} + ${comparison.line_b} 为新研究线 ${state.line?.name ?? ""}（依据 ${comparison.id}），原两线保持可回看。`,
@@ -72,7 +78,29 @@ export function LinePanel({ lines, currentLine, snapshot, onSelectLine, onCreate
     });
   }
 
+  function changeKeep(nextKeep: "a" | "b") {
+    if (!comparison) return;
+    setKeep(nextKeep);
+    const sourceHashes = nextKeep === "a" ? comparison.only_a : comparison.only_b;
+    const ownIDs = new Set(sourceHashes);
+    setAccept((prev) => new Set([...prev.filter((h) => ownIDs.has(h) || comparison.shared.includes(h)), ...sourceHashes]));
+  }
+
   const lineView = snapshot?.line ?? null;
+  const adoptableFromA = comparison
+    ? new Set([
+        ...comparison.compatible_a,
+        ...(keep === "a" ? comparison.conflicts.filter((c) => c.in_line === comparison.line_a).map((c) => c.hash) : []),
+      ])
+    : new Set<string>();
+  const adoptableFromB = comparison
+    ? new Set([
+        ...comparison.compatible_b,
+        ...(keep === "b" ? comparison.conflicts.filter((c) => c.in_line === comparison.line_b).map((c) => c.hash) : []),
+      ])
+    : new Set<string>();
+  const deferredFromA = comparison?.conflicts.filter((c) => c.in_line === comparison.line_a && !adoptableFromA.has(c.hash)) ?? [];
+  const deferredFromB = comparison?.conflicts.filter((c) => c.in_line === comparison.line_b && !adoptableFromB.has(c.hash)) ?? [];
 
   return (
     <details className="import-panel" open={lines.length > 0}>
@@ -152,27 +180,37 @@ export function LinePanel({ lines, currentLine, snapshot, onSelectLine, onCreate
             </>
           )}
 
-          <h4>选择接纳的兼容后续资料（未被对方确认边界排斥）</h4>
-          {comparison.compatible_a.length === 0 && comparison.compatible_b.length === 0 && (
-            <p className="ref-detail">没有可接纳的兼容后续资料。</p>
+          <h4>选择额外接纳的后续资料</h4>
+          {adoptableFromA.size === 0 && adoptableFromB.size === 0 && (
+            <p className="ref-detail">没有可额外接纳的后续资料。</p>
           )}
-          {comparison.compatible_a.map((h) => (
+          {[...adoptableFromA].map((h) => (
             <label key={h} className="accept-item">
               <input type="checkbox" checked={accept.has(h)} onChange={() => toggleAccept(h)} />
-              {h} <span className="ref-detail">（来自 {comparison.line_a} · {lineName(comparison.line_a)}）</span>
+              {h} <span className="ref-detail">（来自 {comparison.line_a} · {lineName(comparison.line_a)}{keep === "a" && comparison.conflicts.some((c) => c.hash === h && c.in_line === comparison.line_a) ? "；随甲方确认可接纳" : ""}）</span>
             </label>
           ))}
-          {comparison.compatible_b.map((h) => (
+          {[...adoptableFromB].map((h) => (
             <label key={h} className="accept-item">
               <input type="checkbox" checked={accept.has(h)} onChange={() => toggleAccept(h)} />
-              {h} <span className="ref-detail">（来自 {comparison.line_b} · {lineName(comparison.line_b)}）</span>
+              {h} <span className="ref-detail">（来自 {comparison.line_b} · {lineName(comparison.line_b)}{keep === "b" && comparison.conflicts.some((c) => c.hash === h && c.in_line === comparison.line_b) ? "；随乙方确认可接纳" : ""}）</span>
             </label>
+          ))}
+          {deferredFromA.map((c) => (
+            <div key={c.hash} className="accept-item ref-detail">
+              {c.hash}：未选 {c.in_line}（{lineName(c.in_line)}）确认，暂缓其越过 {c.checkpoint} 的资料
+            </div>
+          ))}
+          {deferredFromB.map((c) => (
+            <div key={c.hash} className="accept-item ref-detail">
+              {c.hash}：未选 {c.in_line}（{lineName(c.in_line)}）确认，暂缓其越过 {c.checkpoint} 的资料
+            </div>
           ))}
 
           <div className="row" style={{ alignItems: "center", flexWrap: "wrap" }}>
             <label>
               保留确认：{" "}
-              <select value={keep} onChange={(e) => setKeep(e.target.value as "a" | "b")}>
+              <select value={keep} onChange={(e) => changeKeep(e.target.value as "a" | "b")}>
                 <option value="a">{comparison.line_a}（{lineName(comparison.line_a)}）的确认</option>
                 <option value="b">{comparison.line_b}（{lineName(comparison.line_b)}）的确认</option>
               </select>
@@ -183,7 +221,7 @@ export function LinePanel({ lines, currentLine, snapshot, onSelectLine, onCreate
             </button>
           </div>
           <p className="ref-detail">
-            只接纳勾选的兼容资料；缺少中间资料时会保留待补充范围，不会拼接出从未存在的链。
+            所选研究线的确认范围会完整继承；只额外接纳勾选资料。缺少中间资料时会保留待补充范围和出处，不会拼接或当作无效资料拒绝。
           </p>
         </div>
       )}
@@ -201,6 +239,7 @@ export function LinePanel({ lines, currentLine, snapshot, onSelectLine, onCreate
                 {lineView.pending_gaps.map((g) => (
                   <li key={g.hash}>
                     <strong>{g.hash}</strong>
+                    {g.source_line ? `（出处：${g.source_line} · ${lineName(g.source_line)}）` : ""}
                     {g.missing_parents?.length ? ` 缺少父区块：${g.missing_parents.join(", ")}` : ""}
                     {g.missing_refs?.length ? ` 缺少引用目标：${g.missing_refs.join(", ")}` : ""}
                   </li>

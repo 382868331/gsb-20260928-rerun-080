@@ -38,9 +38,9 @@ type StoredBlock struct {
 // VersionSnapshot 是某一索引版本的完整不可变状态，
 // 前端在同一版本内看到的所有数据都来自该快照。
 type VersionSnapshot struct {
-	Version   int64        `json:"version"`
-	CreatedAt string       `json:"created_at"`
-	Label     string       `json:"label,omitempty"`
+	Version   int64  `json:"version"`
+	CreatedAt string `json:"created_at"`
+	Label     string `json:"label,omitempty"`
 	// LineID 非空表示该快照属于某条研究线（研究线有独立的版本序列）。
 	LineID    string       `json:"line_id,omitempty"`
 	TipHash   string       `json:"tip_hash"`
@@ -69,14 +69,14 @@ type Checkpoint struct {
 // 研究线只记录“属于该线的区块身份（按 Hash）”与该线自己的
 // 确认/采用/撤回决定；区块内容仍全局按 Hash 去重存储。
 type ResearchLine struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	CreatedAt string   `json:"created_at"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at"`
 	// ParentLines 记录合并来源的两条研究线；原线及其确认依据保持可回看。
 	ParentLines []string `json:"parent_lines,omitempty"`
 	// BaseComparison 是创建该线的合并所依据的比较 ID（可审计采用决定来源）。
-	BaseComparison string   `json:"base_comparison,omitempty"`
-	Blocks         []string `json:"blocks"`
+	BaseComparison string       `json:"base_comparison,omitempty"`
+	Blocks         []string     `json:"blocks"`
 	Checkpoints    []Checkpoint `json:"checkpoints,omitempty"`
 	// Adoptions 记录该线每个区块的采用决定来自哪次比较、哪条来源线。
 	Adoptions []Adoption `json:"adoptions,omitempty"`
@@ -113,6 +113,7 @@ type Deferred struct {
 // 系统不会为了补齐而拼接出从未存在的链。
 type PendingGap struct {
 	Hash           string   `json:"hash"`
+	SourceLine     string   `json:"source_line,omitempty"`
 	MissingParents []string `json:"missing_parents,omitempty"`
 	MissingRefs    []string `json:"missing_refs,omitempty"`
 }
@@ -142,7 +143,7 @@ type Comparison struct {
 // LineConflict 描述一个跨越确认边界的区块。
 type LineConflict struct {
 	Hash        string `json:"hash"`
-	InLine      string `json:"in_line"`       // 区块所在研究线
+	InLine      string `json:"in_line"`      // 区块所在研究线
 	CrossesLine string `json:"crosses_line"` // 被跨越确认边界的研究线
 	Checkpoint  string `json:"checkpoint"`   // 被跨越的检查点区块 Hash
 }
@@ -150,9 +151,9 @@ type LineConflict struct {
 // TxForkNote 说明同一交易在两条研究线中的各自出现位置
 // （同一交易在不同分叉里的引用分别列出，不合并成一条）。
 type TxForkNote struct {
-	TxID       string   `json:"txid"`
-	BlocksInA  []string `json:"blocks_in_a"`
-	BlocksInB  []string `json:"blocks_in_b"`
+	TxID      string   `json:"txid"`
+	BlocksInA []string `json:"blocks_in_a"`
+	BlocksInB []string `json:"blocks_in_b"`
 }
 
 // LineView 是快照附带的研究线视图：采用审计、待补充范围、
@@ -188,11 +189,13 @@ type Conflict struct {
 }
 
 // 范围标记：confirmed=检查点确认范围，tentative=检查点之后的暂定范围，
-// conflict=越过检查点的冲突范围，reverted=普通被撤回分叉。
+// conflict=越过检查点的冲突范围，pending=缺少父块/引用的待补充资料，
+// reverted=普通被撤回分叉。
 const (
 	ScopeConfirmed = "confirmed"
 	ScopeTentative = "tentative"
 	ScopeConflict  = "conflict"
+	ScopePending   = "pending"
 	ScopeReverted  = "reverted"
 )
 

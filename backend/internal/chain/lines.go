@@ -231,18 +231,57 @@ type MergeSpec struct {
 //   - 接受部分后续资料时不补齐缺失的中间资料：缺口由
 //     BuildLineSnapshot 以 PendingGap 形式保留待补充。
 func MergeLines(a, b *model.ResearchLine, cmp model.Comparison, spec MergeSpec, newID string) (*model.ResearchLine, error) {
+	return nil, fmt.Errorf("合并确认范围需要区块内容，请使用 MergeLinesWithBlocks")
+}
+
+// MergeLinesWithBlocks 与 MergeLines 相同，但使用实际区块内容计算父链，
+// 以完整继承选定研究线的确认范围。
+func MergeLinesWithBlocks(a, b *model.ResearchLine, blocks []model.Block, cmp model.Comparison, spec MergeSpec, newID string) (*model.ResearchLine, error) {
 	if cmp.LineA != a.ID || cmp.LineB != b.ID {
 		return nil, fmt.Errorf("比较 %s 不是研究线 %s 与 %s 的结果", cmp.ID, a.ID, b.ID)
 	}
 	if spec.KeepConfirmation != "a" && spec.KeepConfirmation != "b" {
 		return nil, fmt.Errorf("需要选择保留哪一条研究线的确认（a 或 b）")
 	}
+	idx := NewBlockIndex(blocks)
 	compatible := map[string]string{} // hash -> 来源线 ID
 	for _, h := range cmp.CompatibleA {
 		compatible[h] = a.ID
 	}
 	for _, h := range cmp.CompatibleB {
 		compatible[h] = b.ID
+	}
+	keep, other := a, b
+	if spec.KeepConfirmation == "b" {
+		keep, other = b, a
+	}
+	keepBlocks := map[string]bool{}
+	for _, h := range keep.Blocks {
+		keepBlocks[h] = true
+	}
+	shared := map[string]bool{}
+	for _, h := range cmp.Shared {
+		shared[h] = true
+	}
+	keepCP := EffectiveCheckpoint(keep, idx)
+	// 选中某条线的确认即继承该确认覆盖的完整范围，即使这些独有确认块
+	// 未出现在 accept 中，或在双向比较中被另一条线的检查点标为冲突。
+	if keepCP != nil {
+		for _, h := range cmp.CompatibleA {
+			if keepBlocks[h] && idx.Descends(h, keepCP.Hash) {
+				compatible[h] = keep.ID
+			}
+		}
+		for _, h := range cmp.CompatibleB {
+			if keepBlocks[h] && idx.Descends(h, keepCP.Hash) {
+				compatible[h] = keep.ID
+			}
+		}
+		for _, c := range cmp.Conflicts {
+			if c.InLine == keep.ID && idx.Descends(c.Hash, keepCP.Hash) {
+				compatible[c.Hash] = keep.ID
+			}
+		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	merged := &model.ResearchLine{
@@ -254,12 +293,30 @@ func MergeLines(a, b *model.ResearchLine, cmp model.Comparison, spec MergeSpec, 
 		Blocks:         []string{},
 	}
 	adopted := map[string]bool{}
-	for _, h := range cmp.Shared {
+	addBlock := func(h, sourceLine string) {
+		if adopted[h] {
+			return
+		}
+		adopted[h] = true
 		merged.Blocks = append(merged.Blocks, h)
 		merged.Adoptions = append(merged.Adoptions, model.Adoption{
-			Hash: h, ComparisonID: cmp.ID, SourceLine: "both", AdoptedAt: now,
+			Hash: h, ComparisonID: cmp.ID, SourceLine: sourceLine, AdoptedAt: now,
 		})
-		adopted[h] = true
+	}
+	for _, h := range cmp.Shared {
+		addBlock(h, "both")
+	}
+	if keepCP != nil {
+		for _, h := range keep.Blocks {
+			if !idx.Descends(keepCP.Hash, h) {
+				continue
+			}
+			source := keep.ID
+			if shared[h] {
+				source = "both"
+			}
+			addBlock(h, source)
+		}
 	}
 	seenAccept := map[string]bool{}
 	for _, h := range spec.Accept {
@@ -271,38 +328,60 @@ func MergeLines(a, b *model.ResearchLine, cmp model.Comparison, spec MergeSpec, 
 		if !ok {
 			return nil, fmt.Errorf("区块 %s 不在两线兼容后续资料中，不能接纳（冲突部分只能暂缓）", h)
 		}
-		if adopted[h] {
-			continue
-		}
-		merged.Blocks = append(merged.Blocks, h)
-		merged.Adoptions = append(merged.Adoptions, model.Adoption{
-			Hash: h, ComparisonID: cmp.ID, SourceLine: source, AdoptedAt: now,
-		})
-		adopted[h] = true
+		addBlock(h, source)
 	}
 	sort.Strings(merged.Blocks)
 
-	// 保留选定一方的确认检查点（只保留其区块也进入新线的部分）；
-	// 另一方的确认不被撤销，仍留在原研究线上可回看。
-	keep := a
-	if spec.KeepConfirmation == "b" {
-		keep = b
-	}
-	for _, c := range keep.Checkpoints {
-		if adopted[c.Hash] {
-			merged.Checkpoints = append(merged.Checkpoints, c)
+	// 另一方的确认不被撤销，仍留在原研究线上可回看；新线复制选中线
+	// 已进入确认范围的检查点记录及其确认依据。
+	if keepCP != nil {
+		for _, c := range keep.Checkpoints {
+			if adopted[c.Hash] {
+				merged.Checkpoints = append(merged.Checkpoints, c)
+			}
 		}
 	}
 
-	// 相互冲突的部分：暂不采用，明确记录原因，保留待裁决而非判为无效。
+	// 仅暂缓“对方资料越过新线所选检查点”的冲突。选中线自己的冲突标记
+	// 是相对未选检查点产生的，不能顺带删除或错误暂缓甲方确认。
+	deferredSeen := map[string]bool{}
 	for _, c := range cmp.Conflicts {
+		if c.InLine != other.ID {
+			continue
+		}
+		if keepCP != nil && c.Checkpoint != keepCP.Hash {
+			continue
+		}
+		if deferredSeen[c.Hash] {
+			continue
+		}
+		deferredSeen[c.Hash] = true
+		checkpointHash := ""
+		if keepCP != nil {
+			checkpointHash = keepCP.Hash
+		}
 		merged.Deferred = append(merged.Deferred, model.Deferred{
 			Hash:         c.Hash,
 			ComparisonID: cmp.ID,
 			Reason: fmt.Sprintf(
 				"跨越研究线 %s 已确认检查点 %s 的冲突资料，暂不采用（仍有效，待研究者裁决）",
-				c.CrossesLine, c.Checkpoint),
+				keep.ID, checkpointHash),
 		})
+	}
+	if keepCP == nil {
+		for _, c := range cmp.Conflicts {
+			if deferredSeen[c.Hash] {
+				continue
+			}
+			deferredSeen[c.Hash] = true
+			merged.Deferred = append(merged.Deferred, model.Deferred{
+				Hash:         c.Hash,
+				ComparisonID: cmp.ID,
+				Reason: fmt.Sprintf(
+					"跨越研究线 %s 已确认检查点 %s 的冲突资料，暂不采用（仍有效，待研究者裁决）",
+					c.CrossesLine, c.Checkpoint),
+			})
+		}
 	}
 	return merged, nil
 }
@@ -357,6 +436,9 @@ func BuildLineSnapshot(line *model.ResearchLine, allBlocks []model.Block, nextVe
 	}
 	for _, b := range lineBlocks {
 		gap := model.PendingGap{Hash: b.Hash}
+		if adoption, ok := lineAdoption(line, b.Hash); ok {
+			gap.SourceLine = adoption.SourceLine
+		}
 		if b.PrevHash != "" && !inLine[b.PrevHash] {
 			gap.MissingParents = []string{b.PrevHash}
 		}
@@ -377,4 +459,13 @@ func BuildLineSnapshot(line *model.ResearchLine, allBlocks []model.Block, nextVe
 
 	snap.Line = view
 	return snap
+}
+
+func lineAdoption(line *model.ResearchLine, hash string) (model.Adoption, bool) {
+	for _, adoption := range line.Adoptions {
+		if adoption.Hash == hash {
+			return adoption, true
+		}
+	}
+	return model.Adoption{}, false
 }

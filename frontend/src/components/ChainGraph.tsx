@@ -69,6 +69,8 @@ function scopeColor(scope: string): string {
       return "#1d4ed8";
     case "conflict":
       return "#b91c1c";
+    case "pending":
+      return "#7c3aed";
     default:
       return "#b45309";
   }
@@ -80,6 +82,7 @@ function nodeStyle(b: BlockView, selected: boolean): React.CSSProperties {
     scope === "confirmed" ? "#dcfce7"
     : scope === "tentative" ? "#dbeafe"
     : scope === "conflict" ? "#fee2e2"
+    : scope === "pending" ? "#ede9fe"
     : "#fef3c7";
   return {
     width: NODE_W,

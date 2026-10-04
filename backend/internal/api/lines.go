@@ -285,7 +285,7 @@ func (s *Server) handleLineMerge(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "合并 " + lineA.Name + " + " + lineB.Name
 	}
-	merged, err := chain.MergeLines(&lineA, &lineB, cmp, chain.MergeSpec{
+	merged, err := chain.MergeLinesWithBlocks(&lineA, &lineB, s.Store.AllBlocks(), cmp, chain.MergeSpec{
 		Name:             name,
 		KeepConfirmation: req.Keep,
 		Accept:           req.Accept,

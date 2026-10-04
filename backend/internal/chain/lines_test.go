@@ -22,13 +22,15 @@ func lineFixture() ([]model.Block, *model.ResearchLine, *model.ResearchLine) {
 		{Hash: "S1", PrevHash: "G", Work: 10, Txs: []model.Transaction{tx("coin-S1", "coin-G")}},
 		{Hash: "A2", PrevHash: "S1", Work: 10, Txs: []model.Transaction{tx("txX", "coin-S1"), tx("txA2", "txX")}},
 		{Hash: "A3", PrevHash: "A2", Work: 10, Txs: []model.Transaction{tx("txA3", "txA2")}},
+		{Hash: "A4", PrevHash: "A3", Work: 10, Txs: []model.Transaction{tx("txA4", "txA3")}},
 		{Hash: "B2", PrevHash: "S1", Work: 10, Txs: []model.Transaction{tx("txX", "coin-S1")}},
 		{Hash: "B3", PrevHash: "B2", Work: 10, Txs: []model.Transaction{tx("txB3", "txX")}},
+		{Hash: "B4", PrevHash: "B3", Work: 10, Txs: []model.Transaction{tx("txB4", "txB3")}},
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	la := &model.ResearchLine{
 		ID: "LA", Name: "研究线 A", CreatedAt: now,
-		Blocks: []string{"G", "S1", "A2", "A3"},
+		Blocks: []string{"G", "S1", "A2", "A3", "A4"},
 		Checkpoints: []model.Checkpoint{
 			{Hash: "S1", ConfirmedAt: now},
 			{Hash: "A2", ConfirmedAt: now},
@@ -36,9 +38,9 @@ func lineFixture() ([]model.Block, *model.ResearchLine, *model.ResearchLine) {
 	}
 	lb := &model.ResearchLine{
 		ID: "LB", Name: "研究线 B", CreatedAt: now,
-		Blocks: []string{"G", "S1", "B2", "B3"},
+		Blocks: []string{"G", "S1", "B2", "B3", "B4"},
 		Checkpoints: []model.Checkpoint{
-			{Hash: "S1", ConfirmedAt: now},
+			{Hash: "B2", ConfirmedAt: now},
 		},
 	}
 	return blocks, la, lb
@@ -52,23 +54,32 @@ func TestCompareLinesSharedCompatibleConflicts(t *testing.T) {
 	if got := joinHashes(cmp.Shared); got != "G,S1" {
 		t.Fatalf("共有事实应为 G,S1，实际 %s", got)
 	}
-	// A2/A3 是 LB 检查点（S1）之后的兼容延伸；B2/B3 跨越 LA 的
+	// A3/A4 是 LB 检查点（B2）之后与 B 线无关的正常链外资料；B3/B4 跨越 LA 的
 	// 确认检查点 A2，属于冲突而不是被自动撤销。
-	if got := joinHashes(cmp.CompatibleA); got != "A2,A3" {
-		t.Fatalf("A 线兼容后续资料应为 A2,A3，实际 %s", got)
+	if len(cmp.CompatibleA) != 0 {
+		t.Fatalf("A 线后续资料相对 B2 均为冲突，兼容集合应为空，实际 %v", cmp.CompatibleA)
 	}
 	if len(cmp.CompatibleB) != 0 {
 		t.Fatalf("B 线不应有兼容后续资料，实际 %v", cmp.CompatibleB)
 	}
-	if got := joinHashes(cmp.OnlyB); got != "B2,B3" {
-		t.Fatalf("B 线独有应为 B2,B3，实际 %s", got)
+	if got := joinHashes(cmp.OnlyB); got != "B2,B3,B4" {
+		t.Fatalf("B 线独有应为 B2,B3,B4，实际 %s", got)
 	}
-	if len(cmp.Conflicts) != 2 {
-		t.Fatalf("应有 2 个跨确认边界冲突，实际 %v", cmp.Conflicts)
+	if len(cmp.Conflicts) != 6 {
+		t.Fatalf("双向不同检查点应有 6 个跨确认边界冲突，实际 %v", cmp.Conflicts)
 	}
 	for _, c := range cmp.Conflicts {
-		if c.InLine != "LB" || c.CrossesLine != "LA" || c.Checkpoint != "A2" {
-			t.Fatalf("冲突应标记为 B 线区块跨越 LA 的检查点 A2，实际 %+v", c)
+		switch c.InLine {
+		case "LA":
+			if c.CrossesLine != "LB" || c.Checkpoint != "B2" {
+				t.Fatalf("A 线冲突应标记为跨越 LB 的检查点 B2，实际 %+v", c)
+			}
+		case "LB":
+			if c.CrossesLine != "LA" || c.Checkpoint != "A2" {
+				t.Fatalf("B 线冲突应标记为跨越 LA 的检查点 A2，实际 %+v", c)
+			}
+		default:
+			t.Fatalf("冲突来源线异常: %+v", c)
 		}
 	}
 	// 同一交易 txX 在两条线的不同分叉里分别说明。
@@ -113,15 +124,16 @@ func TestCompareLinesBlockIdentityByHash(t *testing.T) {
 func TestMergeLinesAdoptionsAndDeferred(t *testing.T) {
 	blocks, la, lb := lineFixture()
 	cmp := CompareLines(la, lb, blocks, "C1")
-	merged, err := MergeLines(la, lb, cmp, MergeSpec{
-		Name: "合并线", KeepConfirmation: "a", Accept: []string{"A3"},
+	merged, err := MergeLinesWithBlocks(la, lb, blocks, cmp, MergeSpec{
+		Name: "合并线", KeepConfirmation: "a", Accept: []string{"A4"},
 	}, "LM")
 	if err != nil {
 		t.Fatalf("合并失败: %v", err)
 	}
-	// A2 是 LA 独有但未选中：只接纳被选中的兼容资料。
-	if got := joinHashes(merged.Blocks); got != "A3,G,S1" {
-		t.Fatalf("合并线区块应为 A3,G,S1，实际 %s", got)
+	// 保留 A 线确认时，A 线确认范围 G,S1,A2 完整继承；A3 未接纳，
+	// A4 作为缺少父块的待接纳资料保留。
+	if got := joinHashes(merged.Blocks); got != "A2,A4,G,S1" {
+		t.Fatalf("合并线区块应为 A2,A4,G,S1，实际 %s", got)
 	}
 	// 每个采用决定都记录来源比较与来源线。
 	adopt := map[string]model.Adoption{}
@@ -131,25 +143,49 @@ func TestMergeLinesAdoptionsAndDeferred(t *testing.T) {
 			t.Fatalf("采用决定应记录来源比较 C1，实际 %+v", a)
 		}
 	}
-	if adopt["G"].SourceLine != "both" || adopt["A3"].SourceLine != "LA" {
+	if adopt["G"].SourceLine != "both" || adopt["A2"].SourceLine != "LA" || adopt["A4"].SourceLine != "LA" {
 		t.Fatalf("采用来源应为 both/LA，实际 %+v", adopt)
 	}
-	// 保留 a 方确认：只有进入新线的检查点被保留（A2 未采用则不带入）。
-	if len(merged.Checkpoints) != 1 || merged.Checkpoints[0].Hash != "S1" {
-		t.Fatalf("只应保留 S1 检查点，实际 %+v", merged.Checkpoints)
+	if len(merged.Checkpoints) != 2 {
+		t.Fatalf("应完整保留 A 线 S1/A2 检查点，实际 %+v", merged.Checkpoints)
 	}
-	// 冲突部分暂缓而非判为无效；原有两条线保持不变。
-	if len(merged.Deferred) != 2 {
-		t.Fatalf("B2/B3 应记入暂缓，实际 %+v", merged.Deferred)
+	for _, cp := range merged.Checkpoints {
+		if cp.Hash != "S1" && cp.Hash != "A2" {
+			t.Fatalf("检查点应为 S1/A2，实际 %+v", cp)
+		}
 	}
-	if len(la.Blocks) != 4 || len(la.Checkpoints) != 2 || len(lb.Blocks) != 4 {
+	// 只有对方 B2/B3/B4 跨越所选 A2 的冲突暂缓；A2 自身相对 B2 的冲突标记不能暂缓甲方确认。
+	if len(merged.Deferred) != 3 {
+		t.Fatalf("B2/B3/B4 应记入暂缓，实际 %+v", merged.Deferred)
+	}
+	if len(la.Blocks) != 5 || len(la.Checkpoints) != 2 || len(lb.Blocks) != 5 {
 		t.Fatalf("原有研究线及其确认依据应保持不变")
 	}
 	// 接纳冲突区块必须被拒绝。
-	if _, err := MergeLines(la, lb, cmp, MergeSpec{
+	if _, err := MergeLinesWithBlocks(la, lb, blocks, cmp, MergeSpec{
 		Name: "x", KeepConfirmation: "a", Accept: []string{"B2"},
 	}, "LX"); err == nil {
 		t.Fatalf("接纳跨越确认边界的冲突区块应被拒绝")
+	}
+}
+
+func TestMergeLinesKeepsChosenConfirmationBothDirections(t *testing.T) {
+	blocks, la, lb := lineFixture()
+	cmp := CompareLines(la, lb, blocks, "C1")
+	mergedB, err := MergeLinesWithBlocks(la, lb, blocks, cmp, MergeSpec{
+		Name: "保留 B", KeepConfirmation: "b", Accept: []string{"B4"},
+	}, "LMB")
+	if err != nil {
+		t.Fatalf("保留 B 线确认合并失败: %v", err)
+	}
+	if got := joinHashes(mergedB.Blocks); got != "B2,B4,G,S1" {
+		t.Fatalf("B 线确认范围与待接纳 B4 应为 B2,B4,G,S1，实际 %s", got)
+	}
+	if len(mergedB.Checkpoints) != 1 || mergedB.Checkpoints[0].Hash != "B2" {
+		t.Fatalf("应继承 B 线 B2 检查点，实际 %+v", mergedB.Checkpoints)
+	}
+	if len(mergedB.Deferred) != 3 {
+		t.Fatalf("A2/A3/A4 应相对 B2 暂缓，实际 %+v", mergedB.Deferred)
 	}
 }
 
@@ -158,40 +194,46 @@ func TestMergePartialAcceptKeepsPendingGap(t *testing.T) {
 	cmp := CompareLines(la, lb, blocks, "C1")
 	// 只接纳 A3 而不接纳中间区块 A2：缺口保留待补充，
 	// 不拼接出从未存在的链。
-	merged, err := MergeLines(la, lb, cmp, MergeSpec{
-		Name: "部分接纳", KeepConfirmation: "a", Accept: []string{"A3"},
+	merged, err := MergeLinesWithBlocks(la, lb, blocks, cmp, MergeSpec{
+		Name: "部分接纳", KeepConfirmation: "a", Accept: []string{"A4"},
 	}, "LM")
 	if err != nil {
 		t.Fatalf("合并失败: %v", err)
 	}
 	snap := BuildLineSnapshot(merged, blocks, 1, "", nil)
+	if len(snap.Conflicts) != 0 {
+		t.Fatalf("缺少父块的待接纳资料不能记为冲突，实际 %+v", snap.Conflicts)
+	}
 	var gap *model.PendingGap
 	for i := range snap.Line.PendingGaps {
-		if snap.Line.PendingGaps[i].Hash == "A3" {
+		if snap.Line.PendingGaps[i].Hash == "A4" {
 			gap = &snap.Line.PendingGaps[i]
 		}
 	}
-	if gap == nil || joinHashes(gap.MissingParents) != "A2" {
-		t.Fatalf("A3 应标记缺少父区块 A2 的待补充范围，实际 %+v", snap.Line.PendingGaps)
+	if gap == nil || joinHashes(gap.MissingParents) != "A3" || gap.SourceLine != "LA" {
+		t.Fatalf("A4 应标记缺少父区块 A3 的待补充范围及 LA 出处，实际 %+v", snap.Line.PendingGaps)
 	}
 	// 缺口存在时 A3 不与 S1 拼成一条链：A3 是独立链根（高度 0）。
 	for _, b := range snap.Blocks {
-		if b.Hash == "A3" && b.Height != 0 {
-			t.Fatalf("缺少中间资料时 A3 不应被拼接到 S1 之后，高度 %d", b.Height)
+		if b.Hash == "A4" && b.Height != 0 {
+			t.Fatalf("缺少中间资料时 A4 不应被拼接到 A2 之后，高度 %d", b.Height)
+		}
+		if b.Hash == "A4" && b.Scope != model.ScopePending {
+			t.Fatalf("缺少父块的 A4 应为待补充范围，实际 %s", b.Scope)
 		}
 	}
 	// 迟到的共同祖先材料到达后，缺口自动消失。
-	merged.Blocks = append(merged.Blocks, "A2")
+	merged.Blocks = append(merged.Blocks, "A3")
 	merged.Adoptions = append(merged.Adoptions, model.Adoption{
-		Hash: "A2", ComparisonID: "C1", SourceLine: "LA",
+		Hash: "A3", ComparisonID: "C1", SourceLine: "LA",
 	})
 	snap2 := BuildLineSnapshot(merged, blocks, 2, "迟到资料", nil)
 	if len(snap2.Line.PendingGaps) != 0 {
 		t.Fatalf("迟到资料到达后待补充范围应消失，实际 %+v", snap2.Line.PendingGaps)
 	}
 	for _, b := range snap2.Blocks {
-		if b.Hash == "A3" && b.Height != 3 {
-			t.Fatalf("补齐后 A3 高度应为 3，实际 %d", b.Height)
+		if b.Hash == "A4" && b.Height != 4 {
+			t.Fatalf("补齐后 A4 高度应为 4，实际 %d", b.Height)
 		}
 	}
 }

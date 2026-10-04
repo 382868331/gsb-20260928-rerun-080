@@ -40,13 +40,14 @@ export interface TxPosition {
 }
 
 // 范围标记：confirmed=检查点确认范围，tentative=检查点后暂定范围，
-// conflict=越过检查点的冲突范围，reverted=普通被撤回分叉。
-export type Scope = "confirmed" | "tentative" | "conflict" | "reverted";
+// conflict=越过检查点的冲突范围，pending=缺少依据的待补充资料，reverted=普通被撤回分叉。
+export type Scope = "confirmed" | "tentative" | "conflict" | "pending" | "reverted";
 
 export const SCOPE_LABEL: Record<Scope, string> = {
   confirmed: "确认范围",
   tentative: "暂定范围",
   conflict: "冲突范围",
+  pending: "待补充",
   reverted: "已撤回旧分叉",
 };
 
@@ -118,6 +119,7 @@ export interface Deferred {
 
 export interface PendingGap {
   hash: string;
+  source_line?: string;
   missing_parents?: string[];
   missing_refs?: string[];
 }

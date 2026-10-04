@@ -195,11 +195,57 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		for _, h := range line.Blocks {
 			inLine[h] = true
 		}
+		existingAdoption := map[string]bool{}
+		for _, adoption := range line.Adoptions {
+			existingAdoption[adoption.Hash] = true
+		}
+		var baseComparison *model.Comparison
+		chosenSourceLines := map[string]bool{}
+		for _, adoption := range line.Adoptions {
+			if adoption.ComparisonID == line.BaseComparison && adoption.SourceLine != "both" {
+				chosenSourceLines[adoption.SourceLine] = true
+			}
+		}
+		if line.BaseComparison != "" {
+			if cmp, ok := s.Store.Comparison(line.BaseComparison); ok {
+				baseComparison = &cmp
+			}
+		}
 		changed := false
 		for _, b := range req.Blocks {
 			if !inLine[b.Hash] {
 				line.Blocks = append(line.Blocks, b.Hash)
 				inLine[b.Hash] = true
+				if baseComparison != nil && !existingAdoption[b.Hash] {
+					sourceLine := "both"
+					eligible := false
+					for _, h := range baseComparison.OnlyA {
+						if h == b.Hash && chosenSourceLines[baseComparison.LineA] {
+							sourceLine = baseComparison.LineA
+							eligible = true
+						}
+					}
+					for _, h := range baseComparison.OnlyB {
+						if h == b.Hash && chosenSourceLines[baseComparison.LineB] {
+							sourceLine = baseComparison.LineB
+							eligible = true
+						}
+					}
+					for _, h := range baseComparison.Shared {
+						if h == b.Hash {
+							eligible = true
+						}
+					}
+					if eligible {
+						line.Adoptions = append(line.Adoptions, model.Adoption{
+							Hash:         b.Hash,
+							ComparisonID: baseComparison.ID,
+							SourceLine:   sourceLine,
+							AdoptedAt:    time.Now().UTC().Format(time.RFC3339),
+						})
+						existingAdoption[b.Hash] = true
+					}
+				}
 				changed = true
 			}
 		}
