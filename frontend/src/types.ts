@@ -81,6 +81,85 @@ export interface TxRef {
   to_scope?: Scope;
   to_confirmations: number;
   active: boolean;
+  // 目标交易在当前快照中的出现位置数：撤回未确认资料后，
+  // 大于 0 表示该引用仍有独立来源。
+  independent_sources: number;
+}
+
+// 研究线：两位研究者各自确认检查点、各自导入资料的一条研究线索。
+export interface LineMeta {
+  id: string;
+  name: string;
+  created_at: string;
+  parent_lines?: string[];
+  base_comparison?: string;
+  block_count: number;
+  checkpoints: number;
+  latest_version: number;
+}
+
+export interface Adoption {
+  hash: string;
+  comparison_id: string;
+  source_line: string; // 来源线 ID；共有资料为 "both"
+  adopted_at: string;
+}
+
+export interface Withdrawal {
+  hash: string;
+  withdrawn_at: string;
+}
+
+export interface Deferred {
+  hash: string;
+  comparison_id: string;
+  reason: string;
+}
+
+export interface PendingGap {
+  hash: string;
+  missing_parents?: string[];
+  missing_refs?: string[];
+}
+
+// 研究线视图：采用审计、待补充范围、暂缓冲突与撤回记录。
+export interface LineView {
+  id: string;
+  name: string;
+  parent_lines?: string[];
+  base_comparison?: string;
+  adoptions: Record<string, Adoption>;
+  pending_gaps: PendingGap[];
+  deferred: Deferred[];
+  withdrawals: Withdrawal[];
+}
+
+export interface LineConflict {
+  hash: string;
+  in_line: string;
+  crosses_line: string;
+  checkpoint: string;
+}
+
+export interface TxForkNote {
+  txid: string;
+  blocks_in_a: string[];
+  blocks_in_b: string[];
+}
+
+// 两条研究线的一次比较结果（持久化，供采用决定溯源）。
+export interface Comparison {
+  id: string;
+  line_a: string;
+  line_b: string;
+  created_at: string;
+  shared: string[];
+  only_a: string[];
+  only_b: string[];
+  compatible_a: string[];
+  compatible_b: string[];
+  conflicts: LineConflict[];
+  tx_notes: TxForkNote[];
 }
 
 export type RefDiffKind =
@@ -106,6 +185,7 @@ export interface Snapshot {
   version: number;
   created_at: string;
   label?: string;
+  line_id?: string;
   tip_hash: string;
   tip_height: number;
   blocks: BlockView[];
@@ -113,6 +193,7 @@ export interface Snapshot {
   tx_refs: TxRef[];
   checkpoint?: CheckpointView | null;
   conflicts: Conflict[];
+  line?: LineView | null;
 }
 
 export interface VersionMeta {
@@ -127,6 +208,7 @@ export interface ImportResponse {
   added: number;
   skipped: number;
   state: Snapshot;
+  line_state?: Snapshot | null;
 }
 
 export interface RawBlock {

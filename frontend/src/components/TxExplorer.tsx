@@ -114,6 +114,8 @@ export function TxExplorer({ snapshot, selectedTx, onSelectTx, onSelectBlock }: 
                       ) : (
                         "尚未在索引中解析到"
                       )}
+                      {" · 独立来源 "}
+                      {r.independent_sources > 0 ? `×${r.independent_sources}` : "无"}
                     </div>
                   </li>
                 ))}

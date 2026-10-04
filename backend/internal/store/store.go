@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 
 	"chainresearch/internal/model"
@@ -24,20 +25,32 @@ type Store struct {
 	checkpoints []model.Checkpoint
 	// resolutions 记录冲突裁决：冲突 ID -> "independent"（建立独立研究）。
 	resolutions map[string]string
+	// lines 是全部研究线（含合并产生的新线；原线保持可回看）。
+	lines     map[string]*model.ResearchLine
+	lineOrder []string
+	// comparisons 是已持久化的研究线比较结果，供采用决定溯源。
+	comparisons []model.Comparison
+	// lineSnapshots 是各研究线独立的版本序列。
+	lineSnapshots map[string][]model.VersionSnapshot
 }
 
 type persisted struct {
-	Blocks      []model.Block           `json:"blocks"`
-	Snapshots   []model.VersionSnapshot `json:"snapshots"`
-	Checkpoints []model.Checkpoint      `json:"checkpoints,omitempty"`
-	Resolutions map[string]string       `json:"resolutions,omitempty"`
+	Blocks        []model.Block                    `json:"blocks"`
+	Snapshots     []model.VersionSnapshot          `json:"snapshots"`
+	Checkpoints   []model.Checkpoint               `json:"checkpoints,omitempty"`
+	Resolutions   map[string]string                `json:"resolutions,omitempty"`
+	Lines         []model.ResearchLine             `json:"lines,omitempty"`
+	Comparisons   []model.Comparison               `json:"comparisons,omitempty"`
+	LineSnapshots map[string][]model.VersionSnapshot `json:"line_snapshots,omitempty"`
 }
 
 func Open(dir string) (*Store, error) {
 	s := &Store{
-		path:        filepath.Join(dir, "store.json"),
-		blocks:      map[string]model.Block{},
-		resolutions: map[string]string{},
+		path:          filepath.Join(dir, "store.json"),
+		blocks:        map[string]model.Block{},
+		resolutions:   map[string]string{},
+		lines:         map[string]*model.ResearchLine{},
+		lineSnapshots: map[string][]model.VersionSnapshot{},
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -55,6 +68,15 @@ func Open(dir string) (*Store, error) {
 		s.checkpoints = p.Checkpoints
 		if p.Resolutions != nil {
 			s.resolutions = p.Resolutions
+		}
+		for i := range p.Lines {
+			line := p.Lines[i]
+			s.lines[line.ID] = &line
+			s.lineOrder = append(s.lineOrder, line.ID)
+		}
+		s.comparisons = p.Comparisons
+		if p.LineSnapshots != nil {
+			s.lineSnapshots = p.LineSnapshots
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
@@ -202,6 +224,127 @@ func (s *Store) Resolutions() map[string]string {
 	return out
 }
 
+// CreateLine 追加一条研究线（ID 由存储分配，保证唯一）并落盘。
+func (s *Store) CreateLine(line model.ResearchLine) (model.ResearchLine, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.lineOrder) + 1
+	for {
+		line.ID = "L" + strconv.Itoa(n)
+		if _, exists := s.lines[line.ID]; !exists {
+			break
+		}
+		n++
+	}
+	stored := line
+	s.lines[line.ID] = &stored
+	s.lineOrder = append(s.lineOrder, line.ID)
+	if err := s.flushLocked(); err != nil {
+		return model.ResearchLine{}, err
+	}
+	return stored, nil
+}
+
+// UpdateLine 覆盖保存一条研究线（导入新区块、确认检查点、撤回等）。
+func (s *Store) UpdateLine(line *model.ResearchLine) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.lines[line.ID]; !ok {
+		return fmt.Errorf("研究线 %s 不存在", line.ID)
+	}
+	stored := *line
+	s.lines[line.ID] = &stored
+	return s.flushLocked()
+}
+
+func (s *Store) Line(id string) (model.ResearchLine, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	line, ok := s.lines[id]
+	if !ok {
+		return model.ResearchLine{}, false
+	}
+	return *line, true
+}
+
+func (s *Store) Lines() []model.ResearchLine {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.ResearchLine, 0, len(s.lineOrder))
+	for _, id := range s.lineOrder {
+		out = append(out, *s.lines[id])
+	}
+	return out
+}
+
+// AddComparison 持久化一次研究线比较结果（ID 由存储分配）。
+func (s *Store) AddComparison(cmp model.Comparison) (model.Comparison, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cmp.ID = "C" + strconv.Itoa(len(s.comparisons)+1)
+	s.comparisons = append(s.comparisons, cmp)
+	if err := s.flushLocked(); err != nil {
+		return model.Comparison{}, err
+	}
+	return cmp, nil
+}
+
+func (s *Store) Comparison(id string) (model.Comparison, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, c := range s.comparisons {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return model.Comparison{}, false
+}
+
+func (s *Store) Comparisons() []model.Comparison {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Comparison, len(s.comparisons))
+	copy(out, s.comparisons)
+	return out
+}
+
+// SaveLineSnapshot 为研究线追加一个版本快照（研究线有独立版本序列）。
+func (s *Store) SaveLineSnapshot(snap model.VersionSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lineSnapshots[snap.LineID] = append(s.lineSnapshots[snap.LineID], snap)
+	return s.flushLocked()
+}
+
+func (s *Store) LineSnapshot(lineID string, version int64) (model.VersionSnapshot, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, snap := range s.lineSnapshots[lineID] {
+		if snap.Version == version {
+			return snap, true
+		}
+	}
+	return model.VersionSnapshot{}, false
+}
+
+func (s *Store) LatestLineSnapshot(lineID string) (model.VersionSnapshot, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snaps := s.lineSnapshots[lineID]
+	if len(snaps) == 0 {
+		return model.VersionSnapshot{}, false
+	}
+	return snaps[len(snaps)-1], true
+}
+
+func (s *Store) LineVersions(lineID string) []model.VersionSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.VersionSnapshot, len(s.lineSnapshots[lineID]))
+	copy(out, s.lineSnapshots[lineID])
+	return out
+}
+
 func (s *Store) flushLocked() error {
 	blocks := make([]model.Block, 0, len(s.blocks))
 	for _, b := range s.blocks {
@@ -213,6 +356,13 @@ func (s *Store) flushLocked() error {
 		Snapshots:   s.snapshots,
 		Checkpoints: s.checkpoints,
 		Resolutions: s.resolutions,
+	}
+	for _, id := range s.lineOrder {
+		p.Lines = append(p.Lines, *s.lines[id])
+	}
+	p.Comparisons = s.comparisons
+	if len(s.lineSnapshots) > 0 {
+		p.LineSnapshots = s.lineSnapshots
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {

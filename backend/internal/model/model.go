@@ -41,6 +41,8 @@ type VersionSnapshot struct {
 	Version   int64        `json:"version"`
 	CreatedAt string       `json:"created_at"`
 	Label     string       `json:"label,omitempty"`
+	// LineID 非空表示该快照属于某条研究线（研究线有独立的版本序列）。
+	LineID    string       `json:"line_id,omitempty"`
 	TipHash   string       `json:"tip_hash"`
 	TipHeight int64        `json:"tip_height"`
 	Blocks    []BlockView  `json:"blocks"`
@@ -50,6 +52,8 @@ type VersionSnapshot struct {
 	Checkpoint *CheckpointView `json:"checkpoint,omitempty"`
 	// Conflicts 记录越过检查点的替代链冲突，保留待研究者裁决。
 	Conflicts []Conflict `json:"conflicts"`
+	// Line 是研究线视图（采用审计、待补充范围、暂缓冲突、撤回记录）。
+	Line *LineView `json:"line,omitempty"`
 }
 
 // Checkpoint 是研究者明确确认的链检查点：对应区块及其之前
@@ -58,6 +62,110 @@ type Checkpoint struct {
 	Hash        string `json:"hash"`
 	Note        string `json:"note,omitempty"`
 	ConfirmedAt string `json:"confirmed_at"`
+}
+
+// ResearchLine 是一条研究线：两位研究者可以从相同资料出发，
+// 各自确认不同的检查点、各自导入新的区块与交易引用。
+// 研究线只记录“属于该线的区块身份（按 Hash）”与该线自己的
+// 确认/采用/撤回决定；区块内容仍全局按 Hash 去重存储。
+type ResearchLine struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	CreatedAt string   `json:"created_at"`
+	// ParentLines 记录合并来源的两条研究线；原线及其确认依据保持可回看。
+	ParentLines []string `json:"parent_lines,omitempty"`
+	// BaseComparison 是创建该线的合并所依据的比较 ID（可审计采用决定来源）。
+	BaseComparison string   `json:"base_comparison,omitempty"`
+	Blocks         []string `json:"blocks"`
+	Checkpoints    []Checkpoint `json:"checkpoints,omitempty"`
+	// Adoptions 记录该线每个区块的采用决定来自哪次比较、哪条来源线。
+	Adoptions []Adoption `json:"adoptions,omitempty"`
+	// Withdrawals 记录后来被撤回的未确认资料。
+	Withdrawals []Withdrawal `json:"withdrawals,omitempty"`
+	// Deferred 记录合并时暂不采用的相互冲突部分（不是判为无效）。
+	Deferred []Deferred `json:"deferred,omitempty"`
+}
+
+// Adoption 是一条采用决定：某区块因哪次比较、从哪条研究线被采纳。
+type Adoption struct {
+	Hash         string `json:"hash"`
+	ComparisonID string `json:"comparison_id"`
+	SourceLine   string `json:"source_line"` // 来源线 ID；共有资料为 "both"
+	AdoptedAt    string `json:"adopted_at"`
+}
+
+// Withdrawal 记录一份未确认资料被撤回（已确认范围不允许撤回）。
+type Withdrawal struct {
+	Hash        string `json:"hash"`
+	WithdrawnAt string `json:"withdrawn_at"`
+}
+
+// Deferred 记录合并时暂不采用的冲突区块：保留待研究者裁决，
+// 不拼接进新链，也不标记为无效资料。
+type Deferred struct {
+	Hash         string `json:"hash"`
+	ComparisonID string `json:"comparison_id"`
+	Reason       string `json:"reason"`
+}
+
+// PendingGap 是研究线视图中的待补充范围：已采用的区块缺少
+// 父区块或引用目标所需的中间资料。缺口随迟到资料到达自动消失，
+// 系统不会为了补齐而拼接出从未存在的链。
+type PendingGap struct {
+	Hash           string   `json:"hash"`
+	MissingParents []string `json:"missing_parents,omitempty"`
+	MissingRefs    []string `json:"missing_refs,omitempty"`
+}
+
+// Comparison 是两条研究线的一次比较结果，持久化保存以便
+// 保存重开后复核每个采用决定来自哪次比较。
+type Comparison struct {
+	ID        string `json:"id"`
+	LineA     string `json:"line_a"`
+	LineB     string `json:"line_b"`
+	CreatedAt string `json:"created_at"`
+	// Shared 是两条线共有的事实（按实际区块 Hash 判断，不用高度或交易名代替）。
+	Shared []string `json:"shared"`
+	OnlyA  []string `json:"only_a"`
+	OnlyB  []string `json:"only_b"`
+	// CompatibleA/CompatibleB 是各自独有且未跨越对方确认边界的后续资料，
+	// 可以在合并时被选择接纳。
+	CompatibleA []string `json:"compatible_a"`
+	CompatibleB []string `json:"compatible_b"`
+	// Conflicts 是跨越确认边界的冲突：一方独有区块与另一方的
+	// 已确认检查点矛盾。冲突只被保留，不自动撤销任何确认。
+	Conflicts []LineConflict `json:"conflicts"`
+	// TxNotes 分别说明同一交易在两条线不同分叉里的出现位置。
+	TxNotes []TxForkNote `json:"tx_notes"`
+}
+
+// LineConflict 描述一个跨越确认边界的区块。
+type LineConflict struct {
+	Hash        string `json:"hash"`
+	InLine      string `json:"in_line"`       // 区块所在研究线
+	CrossesLine string `json:"crosses_line"` // 被跨越确认边界的研究线
+	Checkpoint  string `json:"checkpoint"`   // 被跨越的检查点区块 Hash
+}
+
+// TxForkNote 说明同一交易在两条研究线中的各自出现位置
+// （同一交易在不同分叉里的引用分别列出，不合并成一条）。
+type TxForkNote struct {
+	TxID       string   `json:"txid"`
+	BlocksInA  []string `json:"blocks_in_a"`
+	BlocksInB  []string `json:"blocks_in_b"`
+}
+
+// LineView 是快照附带的研究线视图：采用审计、待补充范围、
+// 暂缓的冲突与撤回记录都随同一版本快照返回。
+type LineView struct {
+	ID             string              `json:"id"`
+	Name           string              `json:"name"`
+	ParentLines    []string            `json:"parent_lines,omitempty"`
+	BaseComparison string              `json:"base_comparison,omitempty"`
+	Adoptions      map[string]Adoption `json:"adoptions"`
+	PendingGaps    []PendingGap        `json:"pending_gaps"`
+	Deferred       []Deferred          `json:"deferred"`
+	Withdrawals    []Withdrawal        `json:"withdrawals"`
 }
 
 // CheckpointView 是快照中生效检查点的视图，附带由链接关系计算的高度。
@@ -143,6 +251,9 @@ type TxRef struct {
 	ToScope           string `json:"to_scope,omitempty"`
 	ToConfirmations   int64  `json:"to_confirmations"`
 	Active            bool   `json:"active"`
+	// IndependentSources 是目标交易在当前快照中仍存在的出现位置数：
+	// 撤回某份未确认资料后，该值大于 0 的引用仍有独立来源。
+	IndependentSources int `json:"independent_sources"`
 }
 
 // RefDiffEntry 描述两个索引版本之间一条引用关系的变化。

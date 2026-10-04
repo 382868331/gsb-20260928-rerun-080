@@ -1,4 +1,4 @@
-import type { ImportResponse, RawBlock, RefDiff, Snapshot, VersionMeta } from "./types";
+import type { Comparison, ImportResponse, LineMeta, RawBlock, RefDiff, Snapshot, VersionMeta } from "./types";
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, {
@@ -45,10 +45,10 @@ export function fetchRefDiff(from: number, to: number): Promise<RefDiff> {
   }));
 }
 
-export function importBlocks(blocks: RawBlock[], label: string): Promise<ImportResponse> {
+export function importBlocks(blocks: RawBlock[], label: string, lineId?: string): Promise<ImportResponse> {
   return req("/api/import", {
     method: "POST",
-    body: JSON.stringify({ blocks, label }),
+    body: JSON.stringify({ blocks, label, line_id: lineId || undefined }),
   });
 }
 
@@ -67,5 +67,63 @@ export function resolveConflict(id: string): Promise<{ state: Snapshot }> {
   return req("/api/conflicts/resolve", {
     method: "POST",
     body: JSON.stringify({ id, action: "independent" }),
+  });
+}
+
+// ---- 研究线：比较、合并、撤回 ----
+
+export function fetchLines(): Promise<{ lines: LineMeta[] }> {
+  return req<{ lines: LineMeta[] }>("/api/lines").then((r) => ({ lines: r.lines ?? [] }));
+}
+
+export function createLine(name: string): Promise<{ line: LineMeta }> {
+  return req("/api/lines", { method: "POST", body: JSON.stringify({ name }) });
+}
+
+export function fetchLineState(line: string, version?: number): Promise<{ snapshot: Snapshot }> {
+  const q = version != null ? `?line=${line}&v=${version}` : `?line=${line}`;
+  return req<{ snapshot: Snapshot }>(`/api/lines/state${q}`).then((res) => {
+    const snap = res.snapshot;
+    snap.blocks = (snap.blocks ?? []).map((b) => ({ ...b, txs: b.txs ?? [] }));
+    snap.tx_index = snap.tx_index ?? [];
+    snap.tx_refs = snap.tx_refs ?? [];
+    snap.conflicts = snap.conflicts ?? [];
+    return { snapshot: snap };
+  });
+}
+
+export function fetchLineVersions(line: string): Promise<{ versions: VersionMeta[] }> {
+  return req<{ versions: VersionMeta[] }>(`/api/lines/versions?line=${line}`).then((r) => ({
+    versions: r.versions ?? [],
+  }));
+}
+
+export function confirmLineCheckpoint(line: string, hash: string, note: string): Promise<{ state: Snapshot }> {
+  return req("/api/lines/checkpoint", {
+    method: "POST",
+    body: JSON.stringify({ line, hash, note }),
+  });
+}
+
+export function compareLines(a: string, b: string): Promise<{ comparison: Comparison }> {
+  return req("/api/lines/compare", { method: "POST", body: JSON.stringify({ a, b }) });
+}
+
+export function mergeLines(
+  comparisonId: string,
+  name: string,
+  keep: "a" | "b",
+  accept: string[],
+): Promise<{ line: LineMeta; state: Snapshot }> {
+  return req("/api/lines/merge", {
+    method: "POST",
+    body: JSON.stringify({ comparison_id: comparisonId, name, keep, accept }),
+  });
+}
+
+export function withdrawFromLine(line: string, hash: string): Promise<{ state: Snapshot }> {
+  return req("/api/lines/withdraw", {
+    method: "POST",
+    body: JSON.stringify({ line, hash }),
   });
 }

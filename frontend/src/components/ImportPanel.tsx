@@ -4,11 +4,12 @@ import type { ImportResponse, RawBlock } from "../types";
 
 interface Props {
   onImported: (result: ImportResponse) => void;
+  lineId?: string;
 }
 
 // 人工区块导入：支持粘贴 JSON 或载入内置分叉样例。
 // 后端做幂等去重，中断后重复提交同一批数据不会重复索引。
-export function ImportPanel({ onImported }: Props) {
+export function ImportPanel({ onImported, lineId }: Props) {
   const [text, setText] = useState("");
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
@@ -33,7 +34,7 @@ export function ImportPanel({ onImported }: Props) {
       if (!Array.isArray(blocks)) {
         throw new Error("顶层必须是区块数组");
       }
-      const result = await importBlocks(blocks, label || `手动导入 ${new Date().toLocaleString()}`);
+      const result = await importBlocks(blocks, label || `手动导入 ${new Date().toLocaleString()}`, lineId);
       // 响应直接携带最新快照，由父组件同步各区域与版本选择器。
       onImported(result);
     } catch (e) {
@@ -45,7 +46,9 @@ export function ImportPanel({ onImported }: Props) {
 
   return (
     <details className="import-panel">
-      <summary>导入人工区块（JSON，支持中断后重放）</summary>
+      <summary>
+        导入人工区块（JSON，支持中断后重放）{lineId ? `——当前导入到研究线 ${lineId}` : ""}
+      </summary>
       <input className="search" placeholder="本次导入标签（可选）" value={label} onChange={(e) => setLabel(e.target.value)} />
       <textarea rows={8} value={text} onChange={(e) => setText(e.target.value)} placeholder='[{"hash":"G","prev_hash":"","work":100,"txs":[...]}]' />
       <div className="row">

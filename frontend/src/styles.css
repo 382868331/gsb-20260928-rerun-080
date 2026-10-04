@@ -71,6 +71,11 @@ button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
   cursor: pointer; font: inherit;
 }
 .link-btn.active { font-weight: 700; color: #1e3a8a; }
+.compare-result {
+  margin-top: 10px; border-top: 1px dashed #d4d4d8; padding-top: 8px; font-size: 13px;
+}
+.accept-item { display: block; margin: 4px 0; }
+.accept-item input { margin-right: 6px; }
 .tx-columns { display: grid; grid-template-columns: 1fr 1.5fr; gap: 12px; }
 .tx-list, .ref-list { list-style: none; padding: 0; margin: 0; max-height: 320px; overflow: auto; font-size: 13px; }
 .tx-list li { padding: 3px 0; border-bottom: 1px dashed #e4e4e7; }

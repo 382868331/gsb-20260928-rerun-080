@@ -26,13 +26,13 @@ const snapshot: Snapshot = {
       from_txid: "txA", to_txid: "coin-G", vout: 0, resolved: true,
       from_block_hash: "A2", from_branch_id: "fork-A1", from_canonical: false, from_confirmations: 0,
       to_block_hash: "G", to_branch_id: "main", to_canonical: true, to_confirmations: 5,
-      active: false,
+      active: false, independent_sources: 1,
     },
     {
       from_txid: "txA", to_txid: "coin-G", vout: 0, resolved: true,
       from_block_hash: "B2", from_branch_id: "main", from_canonical: true, from_confirmations: 3,
       to_block_hash: "G", to_branch_id: "main", to_canonical: true, to_confirmations: 5,
-      active: true,
+      active: true, independent_sources: 1,
     },
   ],
   conflicts: [],
@@ -154,5 +154,68 @@ describe("版本一致性", () => {
     const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
     expect(select.value).toBe("2");
     expect(screen.getByText(/当前仍显示 v2/)).toBeTruthy();
+  });
+});
+
+describe("研究线比较与合并", () => {
+  const lineSnapshot: Snapshot = {
+    ...snapshot,
+    version: 1,
+    line_id: "L3",
+    label: "合并 L1 + L2（依据 C1）",
+    line: {
+      id: "L3",
+      name: "合并线",
+      parent_lines: ["L1", "L2"],
+      base_comparison: "C1",
+      adoptions: {
+        G: { hash: "G", comparison_id: "C1", source_line: "both", adopted_at: "2026-10-01T00:00:00Z" },
+        B2: { hash: "B2", comparison_id: "C1", source_line: "L2", adopted_at: "2026-10-01T00:00:00Z" },
+      },
+      pending_gaps: [{ hash: "B4", missing_parents: ["B3"] }],
+      deferred: [{ hash: "A2", comparison_id: "C1", reason: "跨越 L1 已确认检查点的冲突资料，暂不采用" }],
+      withdrawals: [],
+    },
+  };
+
+  function stubLineFetch() {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/api/lines/state")) return { snapshot: lineSnapshot };
+        if (url.includes("/api/lines/versions")) {
+          return { versions: [{ version: 1, created_at: "", tip_hash: "B4", tip_height: 4, label: "合并" }] };
+        }
+        if (url.includes("/api/lines")) {
+          return { lines: [
+            { id: "L1", name: "研究线 A", created_at: "", block_count: 4, checkpoints: 2, latest_version: 3 },
+            { id: "L2", name: "研究线 B", created_at: "", block_count: 3, checkpoints: 1, latest_version: 2 },
+            { id: "L3", name: "合并线", created_at: "", block_count: 5, checkpoints: 1, latest_version: 1,
+              parent_lines: ["L1", "L2"], base_comparison: "C1" },
+          ] };
+        }
+        if (url.includes("/api/state")) return { snapshot };
+        if (url.includes("/api/versions")) return { versions: [{ version: 2, created_at: "", tip_hash: "B4", tip_height: 4 }] };
+        return {};
+      },
+    })));
+  }
+
+  it("切换到研究线后各区域与版本选择器共同指向线版本", async () => {
+    stubLineFetch();
+    render(<App />);
+    await waitFor(() => expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0));
+    // 选择研究线 L3（合并线）。
+    const lineSelect = screen.getByLabelText(/当前研究线/) as HTMLSelectElement;
+    fireEvent.change(lineSelect, { target: { value: "L3" } });
+    await waitFor(() => expect(screen.getAllByText(/合并线/).length).toBeGreaterThan(0));
+    // 版本选择器指向研究线自己的版本序列。
+    const versionSelect = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    expect(versionSelect.value).toBe("1");
+    // 待补充范围、暂缓冲突与采用审计共同出现在线视图中。
+    expect(screen.getByText(/待补充范围（缺少中间资料，未拼接）/)).toBeTruthy();
+    expect(screen.getByText(/暂缓的冲突部分（仍有效，待裁决）/)).toBeTruthy();
+    expect(screen.getByText(/采用决定审计（每个区块来自哪次比较）/)).toBeTruthy();
+    expect(screen.getAllByText(/C1/).length).toBeGreaterThan(0);
   });
 });

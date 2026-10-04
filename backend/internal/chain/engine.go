@@ -383,6 +383,9 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string, checkp
 					ref.ToScope = target.Scope
 					ref.ToConfirmations = target.Confirmations
 				}
+				// 目标交易在当前快照中的全部出现位置数即该引用的独立来源数；
+				// 撤回某份未确认资料后，大于 0 表示引用仍有独立来源。
+				ref.IndependentSources = len(posByTx[in.TxID])
 				// 仅当引用方与目标都在当前主链上时才算当前有效；
 				// 目标尚未到达或只存在于另一分叉时不提前认作有效。
 				ref.Active = ref.Resolved && ref.FromCanonical && ref.ToCanonical

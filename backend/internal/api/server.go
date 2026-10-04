@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,14 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/sample", s.handleSample)
 	s.Mux.HandleFunc("/api/checkpoint", s.handleCheckpoint)
 	s.Mux.HandleFunc("/api/conflicts/resolve", s.handleConflictResolve)
+	s.Mux.HandleFunc("/api/lines", s.handleLines)
+	s.Mux.HandleFunc("/api/lines/state", s.handleLineState)
+	s.Mux.HandleFunc("/api/lines/versions", s.handleLineVersions)
+	s.Mux.HandleFunc("/api/lines/checkpoint", s.handleLineCheckpoint)
+	s.Mux.HandleFunc("/api/lines/compare", s.handleLineCompare)
+	s.Mux.HandleFunc("/api/lines/comparisons", s.handleLineComparisons)
+	s.Mux.HandleFunc("/api/lines/merge", s.handleLineMerge)
+	s.Mux.HandleFunc("/api/lines/withdraw", s.handleLineWithdraw)
 }
 
 // rebuild 依据当前全部区块、检查点与冲突裁决生成新版本快照并落盘。
@@ -141,12 +150,16 @@ func (s *Server) handleRefDiff(w http.ResponseWriter, r *http.Request) {
 type importRequest struct {
 	Blocks []model.Block `json:"blocks"`
 	Label  string        `json:"label"`
+	// LineID 非空时，本批区块同时计入该研究线的资料集合，
+	// 并为该研究生成新的线版本（两位研究者各自导入互不干扰）。
+	LineID string `json:"line_id,omitempty"`
 }
 
 type importResponse struct {
-	Added   int                   `json:"added"`
-	Skipped int                   `json:"skipped"`
-	State   model.VersionSnapshot `json:"state"`
+	Added     int                    `json:"added"`
+	Skipped   int                    `json:"skipped"`
+	State     model.VersionSnapshot  `json:"state"`
+	LineState *model.VersionSnapshot `json:"line_state,omitempty"`
 }
 
 // handleImport 幂等导入并在索引变化时生成新版本。
@@ -171,6 +184,39 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	var lineSnap *model.VersionSnapshot
+	if req.LineID != "" {
+		line, ok := s.Store.Line(req.LineID)
+		if !ok {
+			http.Error(w, "研究线 "+req.LineID+" 不存在", http.StatusNotFound)
+			return
+		}
+		inLine := map[string]bool{}
+		for _, h := range line.Blocks {
+			inLine[h] = true
+		}
+		changed := false
+		for _, b := range req.Blocks {
+			if !inLine[b.Hash] {
+				line.Blocks = append(line.Blocks, b.Hash)
+				inLine[b.Hash] = true
+				changed = true
+			}
+		}
+		if changed {
+			sort.Strings(line.Blocks)
+			if err := s.Store.UpdateLine(&line); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			snap, err := s.rebuildLine(&line, "导入 "+strings.TrimSpace(req.Label))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			lineSnap = &snap
+		}
+	}
 	var snap model.VersionSnapshot
 	if result.Added > 0 {
 		snap, err = s.rebuild(strings.TrimSpace(req.Label))
@@ -182,7 +228,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	} else {
 		snap, _ = s.Store.LatestSnapshot()
 	}
-	writeJSON(w, importResponse{Added: result.Added, Skipped: result.Skipped, State: snap})
+	writeJSON(w, importResponse{Added: result.Added, Skipped: result.Skipped, State: snap, LineState: lineSnap})
 }
 
 type checkpointRequest struct {
