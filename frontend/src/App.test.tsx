@@ -44,6 +44,7 @@ beforeEach(() => {
     json: async () => {
       if (url.includes("/api/state")) return { snapshot };
       if (url.includes("/api/versions")) return { versions: [{ version: 2, created_at: "", tip_hash: "B4", tip_height: 4 }] };
+      if (url.includes("/api/studies")) return { studies: [{ id: "main", name: "默认研究线", created_at: "", decisions: [], tip_hash: "B4", tip_height: 4, versions: 1, blocks: 6 }] };
       return {};
     },
   })));
@@ -122,14 +123,14 @@ describe("版本一致性", () => {
     fireEvent.click(screen.getByText("导入并重建索引"));
     // 主体与选择器都应指向 v3。
     await waitFor(() => expect(screen.getAllByText(/v3/).length).toBeGreaterThan(0));
-    const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    const select = screen.getByLabelText(/索引版本/) as HTMLSelectElement;
     expect(select.value).toBe("3");
     expect(screen.getByText(/导入完成：新增 1/)).toBeTruthy();
   });
 
   it("切换版本失败时保留原视角并显示未完成状态", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-      if (url.includes("/api/state?v=3")) {
+      if (url.includes("v=3")) {
         return { ok: false, status: 404, text: async () => "版本不存在", json: async () => ({}) };
       }
       return {
@@ -148,10 +149,10 @@ describe("版本一致性", () => {
     }));
     render(<App />);
     await waitFor(() => expect(screen.getAllByText(/v2/).length).toBeGreaterThan(0));
-    fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText(/索引版本/), { target: { value: "3" } });
     // 切换失败：提示未完成，选择器与主体仍对应 v2。
     await waitFor(() => expect(screen.getByText(/切换到 v3 未完成/)).toBeTruthy());
-    const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    const select = screen.getByLabelText(/索引版本/) as HTMLSelectElement;
     expect(select.value).toBe("2");
     expect(screen.getByText(/当前仍显示 v2/)).toBeTruthy();
   });

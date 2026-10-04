@@ -106,13 +106,77 @@ export interface Snapshot {
   version: number;
   created_at: string;
   label?: string;
+  study?: string;
   tip_hash: string;
   tip_height: number;
   blocks: BlockView[];
   tx_index: TxPosition[];
   tx_refs: TxRef[];
+  pending_gaps?: string[];
   checkpoint?: CheckpointView | null;
   conflicts: Conflict[];
+}
+
+// 研究线：两位研究者各自确认检查点、各自导入后续资料的独立线索。
+export interface Decision {
+  id: string;
+  kind: "merge" | "retract";
+  summary: string;
+  from_studies?: string[];
+  accepted?: string[];
+  deferred?: string[];
+  pending_gaps?: string[];
+  kept_checkpoint?: string;
+  retracted?: string;
+  version: number;
+  created_at: string;
+}
+
+export interface Study {
+  id: string;
+  name: string;
+  parents?: string[];
+  origin?: string;
+  created_at: string;
+  decisions: Decision[];
+}
+
+export interface StudySummary extends Study {
+  tip_hash: string;
+  tip_height: number;
+  versions: number;
+  blocks: number;
+}
+
+// 比较时区块相对另一研究线的关系。
+export type Relation = "shared" | "compatible" | "conflict" | "disconnected";
+
+export const RELATION_LABEL: Record<Relation, string> = {
+  shared: "两线共有",
+  compatible: "兼容后续",
+  conflict: "跨越确认边界的冲突",
+  disconnected: "缺少中间资料",
+};
+
+export interface ComparedBlock {
+  hash: string;
+  prev_hash: string;
+  height: number;
+  scope?: Scope;
+  relation: Relation;
+  canonical: boolean;
+}
+
+export interface CompareResult {
+  study_a: string;
+  study_b: string;
+  checkpoint_a?: CheckpointView | null;
+  checkpoint_b?: CheckpointView | null;
+  shared: ComparedBlock[];
+  only_a: ComparedBlock[];
+  only_b: ComparedBlock[];
+  refs_only_a: TxRef[];
+  refs_only_b: TxRef[];
 }
 
 export interface VersionMeta {

@@ -25,6 +25,7 @@ button {
 }
 button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
 .row { display: flex; gap: 8px; margin-top: 8px; }
+.muted { color: #666; font-size: 12px; }
 .import-panel {
   margin-top: 12px; background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; padding: 10px 14px;
 }

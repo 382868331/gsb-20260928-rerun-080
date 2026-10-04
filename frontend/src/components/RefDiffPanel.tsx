@@ -3,6 +3,7 @@ import { fetchRefDiff } from "../api";
 import type { RefDiff, RefDiffEntry, RefDiffKind, TxRef, VersionMeta } from "../types";
 
 interface Props {
+  study: string;
   versions: VersionMeta[];
   current: number;
   onSelectTx: (txid: string) => void;
@@ -57,7 +58,7 @@ function EntryLine({ entry, onSelectTx }: { entry: RefDiffEntry; onSelectTx: (id
 
 // 分叉切换前后的引用差异查看：任选两个索引版本对比，
 // 区分位置迁移、引用目标变化与仅确认数变化。
-export function RefDiffPanel({ versions, current, onSelectTx }: Props) {
+export function RefDiffPanel({ study, versions, current, onSelectTx }: Props) {
   const sorted = useMemo(() => [...versions].sort((a, b) => a.version - b.version), [versions]);
   const [from, setFrom] = useState<number | null>(null);
   const [to, setTo] = useState<number | null>(null);
@@ -74,7 +75,7 @@ export function RefDiffPanel({ versions, current, onSelectTx }: Props) {
       return;
     }
     let cancelled = false;
-    fetchRefDiff(fromVersion, toVersion)
+    fetchRefDiff(study, fromVersion, toVersion)
       .then((d) => {
         if (!cancelled) setDiff(d);
       })

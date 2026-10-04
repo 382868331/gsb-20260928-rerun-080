@@ -6,9 +6,10 @@ interface Props {
   checkpoint: CheckpointView | null;
   onSelectTx: (txid: string) => void;
   onConfirmCheckpoint: (hash: string) => void;
+  onRetract: (hash: string) => void;
 }
 
-export function BlockDetail({ block, checkpoint, onSelectTx, onConfirmCheckpoint }: Props) {
+export function BlockDetail({ block, checkpoint, onSelectTx, onConfirmCheckpoint, onRetract }: Props) {
   if (!block) {
     return <div className="panel-empty">点击拓扑图中的区块查看详情。</div>;
   }
@@ -37,6 +38,13 @@ export function BlockDetail({ block, checkpoint, onSelectTx, onConfirmCheckpoint
           </button>
         </div>
       )}
+      {scope !== "confirmed" && (
+        <div className="row">
+          <button onClick={() => onRetract(block.hash)}>
+            从本研究线撤回该未确认资料（其他位置仍有独立来源的引用保持有效）
+          </button>
+        </div>
+      )}
       <h4>块内交易（{block.txs.length}）</h4>
       <table className="data-table">
         <thead><tr><th>#</th><th>交易 ID</th><th>备注</th></tr></thead>
@@ -53,4 +61,3 @@ export function BlockDetail({ block, checkpoint, onSelectTx, onConfirmCheckpoint
     </div>
   );
 }
-

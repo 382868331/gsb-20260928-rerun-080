@@ -19,13 +19,14 @@ import (
 // 不自动撤销原确认，由研究者决定是否建立独立研究。
 func BuildSnapshot(blocks []model.Block, nextVersion int64, label string, checkpoints []model.Checkpoint, resolutions map[string]string) model.VersionSnapshot {
 	snap := model.VersionSnapshot{
-		Version:   nextVersion,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		Label:     label,
-		Blocks:    []model.BlockView{},
-		TxIndex:   []model.TxPosition{},
-		TxRefs:    []model.TxRef{},
-		Conflicts: []model.Conflict{},
+		Version:     nextVersion,
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+		Label:       label,
+		Blocks:      []model.BlockView{},
+		TxIndex:     []model.TxPosition{},
+		TxRefs:      []model.TxRef{},
+		PendingGaps: []string{},
+		Conflicts:   []model.Conflict{},
 	}
 	if len(blocks) == 0 {
 		return snap
@@ -45,6 +46,19 @@ func BuildSnapshot(blocks []model.Block, nextVersion int64, label string, checkp
 			delete(tips, b.PrevHash)
 		}
 	}
+	// 待补充范围：父区块不在本研究线内的缺口。只接纳部分后续资料时
+	// 缺少的中间资料记录在此，不拼接出从未存在的链。
+	gapSeen := map[string]bool{}
+	for _, b := range blocks {
+		if b.PrevHash == "" {
+			continue
+		}
+		if _, ok := byHash[b.PrevHash]; !ok && !gapSeen[b.PrevHash] {
+			gapSeen[b.PrevHash] = true
+			snap.PendingGaps = append(snap.PendingGaps, b.PrevHash)
+		}
+	}
+	sort.Strings(snap.PendingGaps)
 	// 高度沿父链计算；缺少父块的块视为链根（独立来源的链段）。
 	var resolve func(h string) int64
 	resolve = func(h string) int64 {

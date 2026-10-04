@@ -38,18 +38,91 @@ type StoredBlock struct {
 // VersionSnapshot 是某一索引版本的完整不可变状态，
 // 前端在同一版本内看到的所有数据都来自该快照。
 type VersionSnapshot struct {
-	Version   int64        `json:"version"`
-	CreatedAt string       `json:"created_at"`
-	Label     string       `json:"label,omitempty"`
+	Version   int64  `json:"version"`
+	CreatedAt string `json:"created_at"`
+	Label     string `json:"label,omitempty"`
+	// Study 是该快照所属的研究线 ID；同一研究线内版本各自递增。
+	Study     string       `json:"study"`
 	TipHash   string       `json:"tip_hash"`
 	TipHeight int64        `json:"tip_height"`
 	Blocks    []BlockView  `json:"blocks"`
 	TxIndex   []TxPosition `json:"tx_index"`
 	TxRefs    []TxRef      `json:"tx_refs"`
+	// PendingGaps 记录本研究线中父区块缺失的待补充范围
+	// （只接纳部分后续资料时，缺少的中间资料保留为缺口，
+	// 不拼接出从未存在的链）。
+	PendingGaps []string `json:"pending_gaps"`
 	// Checkpoint 是该版本生效的研究者确认检查点（nil 表示尚未确认）。
 	Checkpoint *CheckpointView `json:"checkpoint,omitempty"`
 	// Conflicts 记录越过检查点的替代链冲突，保留待研究者裁决。
 	Conflicts []Conflict `json:"conflicts"`
+}
+
+// Study 是一条独立的研究线：两位研究者可以从相同资料出发，
+// 各自确认检查点、各自导入后续区块与交易引用。研究线之间可以
+// 比较与合并，原研究线及其确认依据始终保留可回看。
+type Study struct {
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Parents   []string   `json:"parents,omitempty"`
+	Origin    string     `json:"origin,omitempty"`
+	CreatedAt string     `json:"created_at"`
+	Decisions []Decision `json:"decisions"`
+}
+
+// Decision 记录一次影响研究线内容的采用决定（合并接纳 / 撤回），
+// 保存重开后可复核每个采用决定来自哪次比较。
+type Decision struct {
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"` // merge | retract
+	Summary     string   `json:"summary"`
+	FromStudies []string `json:"from_studies,omitempty"`
+	Accepted    []string `json:"accepted,omitempty"`
+	// Deferred 是比较中发现但暂不采用的相互冲突区块：
+	// 冲突不被标成资料无效，仅保留待后续决定。
+	Deferred []string `json:"deferred,omitempty"`
+	// PendingGaps 是接纳后仍缺少的中间资料（父区块缺失）。
+	PendingGaps    []string `json:"pending_gaps,omitempty"`
+	KeptCheckpoint string   `json:"kept_checkpoint,omitempty"`
+	Retracted      string   `json:"retracted,omitempty"`
+	Version        int64    `json:"version"`
+	CreatedAt      string   `json:"created_at"`
+}
+
+// 比较时一个区块相对于另一研究线的关系：
+// shared=两线共有（按实际区块身份 Hash 判断），
+// compatible=兼容的后续资料（延续对方已有历史，不跨越确认边界），
+// conflict=跨越对方确认边界的冲突，
+// disconnected=缺少中间资料，暂时无法接到对方链上。
+const (
+	RelShared       = "shared"
+	RelCompatible   = "compatible"
+	RelConflict     = "conflict"
+	RelDisconnected = "disconnected"
+)
+
+// ComparedBlock 是比较结果中的一个区块及其相对另一研究线的关系。
+type ComparedBlock struct {
+	Hash      string `json:"hash"`
+	PrevHash  string `json:"prev_hash"`
+	Height    int64  `json:"height"`
+	Scope     string `json:"scope"`
+	Relation  string `json:"relation"`
+	Canonical bool   `json:"canonical"`
+}
+
+// CompareResult 是两条研究线的对比结果：共有事实、各自独有资料
+// （按兼容/冲突/缺中间资料分类）以及各自独有的交易引用。
+type CompareResult struct {
+	StudyA      string          `json:"study_a"`
+	StudyB      string          `json:"study_b"`
+	CheckpointA *CheckpointView `json:"checkpoint_a,omitempty"`
+	CheckpointB *CheckpointView `json:"checkpoint_b,omitempty"`
+	Shared      []ComparedBlock `json:"shared"`
+	OnlyA       []ComparedBlock `json:"only_a"`
+	OnlyB       []ComparedBlock `json:"only_b"`
+	RefsOnlyA   []TxRef         `json:"refs_only_a"`
+	RefsOnlyB   []TxRef         `json:"refs_only_b"`
 }
 
 // Checkpoint 是研究者明确确认的链检查点：对应区块及其之前
