@@ -225,24 +225,45 @@ type MergeSpec struct {
 // MergeLines 依据一次已持久化的比较把两条研究线合并为新线：
 //   - 共有事实与被选中的兼容资料进入新线，每个区块记录采用决定
 //     （来自哪次比较、哪条来源线），保存重开后可复核；
+//   - 明确选择保留的一方，其确认范围（生效检查点及该线内其全部祖先）
+//     完整进入新线：确认检查点及其依据不被遗漏，暂缓另一方冲突
+//     不会顺带删除保留方的确认；
 //   - 跨越保留方确认边界的冲突部分记入 Deferred（暂不采用），
 //     不会被拼接进新链，也不会被标记为无效；
+//   - 缺少父块的待接纳资料（冲突资料的后续延伸）可以被接纳：
+//     保留待补充状态与采用出处，不直接当成无效资料拒绝；
 //   - 原有两条线及其确认依据保持不变，可继续回看；
 //   - 接受部分后续资料时不补齐缺失的中间资料：缺口由
 //     BuildLineSnapshot 以 PendingGap 形式保留待补充。
-func MergeLines(a, b *model.ResearchLine, cmp model.Comparison, spec MergeSpec, newID string) (*model.ResearchLine, error) {
+func MergeLines(a, b *model.ResearchLine, cmp model.Comparison, spec MergeSpec, newID string, blocks []model.Block) (*model.ResearchLine, error) {
 	if cmp.LineA != a.ID || cmp.LineB != b.ID {
 		return nil, fmt.Errorf("比较 %s 不是研究线 %s 与 %s 的结果", cmp.ID, a.ID, b.ID)
 	}
 	if spec.KeepConfirmation != "a" && spec.KeepConfirmation != "b" {
 		return nil, fmt.Errorf("需要选择保留哪一条研究线的确认（a 或 b）")
 	}
+	idx := NewBlockIndex(blocks)
 	compatible := map[string]string{} // hash -> 来源线 ID
 	for _, h := range cmp.CompatibleA {
 		compatible[h] = a.ID
 	}
 	for _, h := range cmp.CompatibleB {
 		compatible[h] = b.ID
+	}
+	conflictByHash := map[string]model.LineConflict{}
+	for _, c := range cmp.Conflicts {
+		conflictByHash[c.Hash] = c
+	}
+	// 直接冲突：父块本身不是冲突资料（直接跨越确认边界分叉出去）。
+	// 冲突资料的后续延伸只是缺少父块的待接纳资料，允许接纳并
+	// 以待补充状态保留，不能当成无效资料直接拒绝。
+	isDirectConflict := func(h string) bool {
+		blk, ok := idx.byHash[h]
+		if !ok {
+			return true
+		}
+		_, parentIsConflict := conflictByHash[blk.PrevHash]
+		return !parentIsConflict
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	merged := &model.ResearchLine{
@@ -261,6 +282,36 @@ func MergeLines(a, b *model.ResearchLine, cmp model.Comparison, spec MergeSpec, 
 		})
 		adopted[h] = true
 	}
+	// 明确选择保留的一方，其确认范围完整进入新线：
+	// 生效检查点及该线内其全部祖先都按采用决定记录出处，
+	// 暂缓另一方冲突不能顺带删除保留方的确认。
+	keep := a
+	if spec.KeepConfirmation == "b" {
+		keep = b
+	}
+	inKeep := map[string]bool{}
+	for _, h := range keep.Blocks {
+		inKeep[h] = true
+	}
+	if cp := EffectiveCheckpoint(keep, idx); cp != nil {
+		for cur := cp.Hash; ; {
+			if inKeep[cur] && !adopted[cur] {
+				merged.Blocks = append(merged.Blocks, cur)
+				merged.Adoptions = append(merged.Adoptions, model.Adoption{
+					Hash: cur, ComparisonID: cmp.ID, SourceLine: keep.ID, AdoptedAt: now,
+				})
+				adopted[cur] = true
+			}
+			blk, ok := idx.byHash[cur]
+			if !ok {
+				break
+			}
+			if _, parentExists := idx.byHash[blk.PrevHash]; !parentExists {
+				break
+			}
+			cur = blk.PrevHash
+		}
+	}
 	seenAccept := map[string]bool{}
 	for _, h := range spec.Accept {
 		if seenAccept[h] {
@@ -269,7 +320,13 @@ func MergeLines(a, b *model.ResearchLine, cmp model.Comparison, spec MergeSpec, 
 		seenAccept[h] = true
 		source, ok := compatible[h]
 		if !ok {
-			return nil, fmt.Errorf("区块 %s 不在两线兼容后续资料中，不能接纳（冲突部分只能暂缓）", h)
+			// 缺少父块的待接纳资料（冲突资料的后续延伸）允许接纳，
+			// 以待补充状态保留并记录出处；直接冲突部分只能暂缓。
+			c, isConflict := conflictByHash[h]
+			if !isConflict || isDirectConflict(h) {
+				return nil, fmt.Errorf("区块 %s 不在两线兼容后续资料中，不能接纳（冲突部分只能暂缓）", h)
+			}
+			source = c.InLine
 		}
 		if adopted[h] {
 			continue
@@ -282,12 +339,8 @@ func MergeLines(a, b *model.ResearchLine, cmp model.Comparison, spec MergeSpec, 
 	}
 	sort.Strings(merged.Blocks)
 
-	// 保留选定一方的确认检查点（只保留其区块也进入新线的部分）；
+	// 保留选定一方的确认检查点（确认范围已完整进入新线）；
 	// 另一方的确认不被撤销，仍留在原研究线上可回看。
-	keep := a
-	if spec.KeepConfirmation == "b" {
-		keep = b
-	}
 	for _, c := range keep.Checkpoints {
 		if adopted[c.Hash] {
 			merged.Checkpoints = append(merged.Checkpoints, c)
@@ -295,7 +348,11 @@ func MergeLines(a, b *model.ResearchLine, cmp model.Comparison, spec MergeSpec, 
 	}
 
 	// 相互冲突的部分：暂不采用，明确记录原因，保留待裁决而非判为无效。
+	// 已进入新线的区块（保留方确认范围、被接纳的待补充资料）不再暂缓。
 	for _, c := range cmp.Conflicts {
+		if adopted[c.Hash] {
+			continue
+		}
 		merged.Deferred = append(merged.Deferred, model.Deferred{
 			Hash:         c.Hash,
 			ComparisonID: cmp.ID,

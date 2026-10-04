@@ -127,7 +127,9 @@ func TestResearchLineCompareMergeFlow(t *testing.T) {
 		t.Fatalf("txX 在两条线不同分叉的出现应分别说明")
 	}
 
-	// 合并：保留 A 线确认，只接纳 A3（缺少中间区块 A2 -> 待补充）。
+	// 合并：保留 A 线确认，只接纳 A3。
+	// 明确选择的确认范围（A2 及其祖先）完整进入新线，
+	// 甲方确认检查点及其依据不被遗漏。
 	code, resp = postJSON(t, srv, "/api/lines/merge", fmt.Sprintf(
 		`{"comparison_id":%q,"name":"合并线","keep":"a","accept":["A3"]}`, cmpID))
 	if code != http.StatusOK {
@@ -136,26 +138,61 @@ func TestResearchLineCompareMergeFlow(t *testing.T) {
 	mergedID := resp["line"].(map[string]any)["id"].(string)
 	state := resp["state"].(map[string]any)
 	lineView := state["line"].(map[string]any)
+	if cp := state["checkpoint"]; cp == nil || cp.(map[string]any)["hash"] != "A2" {
+		t.Fatalf("保留甲方确认后合并线检查点应为 A2，实际 %v", cp)
+	}
 	gaps := lineView["pending_gaps"].([]any)
-	if len(gaps) != 1 {
-		t.Fatalf("缺少中间资料 A2 应保留待补充范围，实际 %v", gaps)
+	if len(gaps) != 0 {
+		t.Fatalf("确认范围完整进入新线后不应有待补充范围，实际 %v", gaps)
 	}
 	// 冲突部分暂缓而非无效。
 	deferred := lineView["deferred"].([]any)
 	if len(deferred) != 1 {
 		t.Fatalf("B2 应记入暂缓，实际 %v", deferred)
 	}
-	// 采用决定记录来源比较。
+	// 采用决定记录来源比较：确认范围 A2 来自 A 线，A3 为勾选接纳。
 	adoptions := lineView["adoptions"].(map[string]any)
+	if adoptions["A2"].(map[string]any)["comparison_id"] != cmpID ||
+		adoptions["A2"].(map[string]any)["source_line"] != lineA {
+		t.Fatalf("确认范围 A2 的采用依据应来自比较 %s 与研究线 A，实际 %v", cmpID, adoptions)
+	}
 	if adoptions["A3"].(map[string]any)["comparison_id"] != cmpID {
 		t.Fatalf("A3 的采用决定应来自比较 %s，实际 %v", cmpID, adoptions)
 	}
 
-	// 迟到的共同祖先材料到达：把 A2 导入合并线，待补充范围消失。
-	importToLine(t, srv, mergedID, byHash["A2"])
-	code, resp = getJSON(t, srv, "/api/lines/state?line="+mergedID)
+	// 重复提交同一合并决定：生成新的研究线，互不影响。
+	code, resp = postJSON(t, srv, "/api/lines/merge", fmt.Sprintf(
+		`{"comparison_id":%q,"name":"再次合并","keep":"a","accept":["A3"]}`, cmpID))
 	if code != http.StatusOK {
-		t.Fatalf("读取合并线状态失败: %d", code)
+		t.Fatalf("重复合并失败: %d %v", code, resp)
+	}
+	if dupID := resp["line"].(map[string]any)["id"].(string); dupID == mergedID {
+		t.Fatalf("重复合并应生成新的研究线")
+	}
+
+	// 保留乙方确认、只接纳 A3：缺少中间区块 A2 的待接纳资料
+	// 保留待补充状态与出处，不被当成无效资料拒绝。
+	code, resp = postJSON(t, srv, "/api/lines/merge", fmt.Sprintf(
+		`{"comparison_id":%q,"name":"部分接纳","keep":"b","accept":["A3"]}`, cmpID))
+	if code != http.StatusOK {
+		t.Fatalf("缺少父块的待接纳资料不应被拒绝: %d %v", code, resp)
+	}
+	partialID := resp["line"].(map[string]any)["id"].(string)
+	lineView = resp["state"].(map[string]any)["line"].(map[string]any)
+	gaps = lineView["pending_gaps"].([]any)
+	if len(gaps) != 1 {
+		t.Fatalf("缺少中间资料 A2 应保留待补充范围，实际 %v", gaps)
+	}
+	adoptions = lineView["adoptions"].(map[string]any)
+	if adoptions["A3"].(map[string]any)["comparison_id"] != cmpID {
+		t.Fatalf("待补充资料 A3 应保留采用出处，实际 %v", adoptions)
+	}
+
+	// 补交迟到父块：把 A2 导入该线，待补充范围消失。
+	importToLine(t, srv, partialID, byHash["A2"])
+	code, resp = getJSON(t, srv, "/api/lines/state?line="+partialID)
+	if code != http.StatusOK {
+		t.Fatalf("读取部分接纳线状态失败: %d", code)
 	}
 	lineView = resp["snapshot"].(map[string]any)["line"].(map[string]any)
 	if gaps := lineView["pending_gaps"].([]any); len(gaps) != 0 {
@@ -163,7 +200,7 @@ func TestResearchLineCompareMergeFlow(t *testing.T) {
 	}
 
 	// 撤回未确认资料 A3：引用 txA3->txX 失去独立来源。
-	code, resp = postJSON(t, srv, "/api/lines/withdraw", fmt.Sprintf(`{"line":%q,"hash":"A3"}`, mergedID))
+	code, resp = postJSON(t, srv, "/api/lines/withdraw", fmt.Sprintf(`{"line":%q,"hash":"A3"}`, partialID))
 	if code != http.StatusOK {
 		t.Fatalf("撤回未确认资料失败: %d %v", code, resp)
 	}
@@ -174,22 +211,14 @@ func TestResearchLineCompareMergeFlow(t *testing.T) {
 			t.Fatalf("撤回 A3 后不应再出现 txA3 发出的引用: %v", ref)
 		}
 	}
-	// 已确认范围不能撤回（合并线保留了 A 线的 S1 检查点；
-	// A2 检查点因合并时未采用 A2 而未带入新线）。
+	// 已确认范围不能撤回：合并线完整保留了 A 线的确认（S1 与 A2）。
 	code, _ = postJSON(t, srv, "/api/lines/withdraw", fmt.Sprintf(`{"line":%q,"hash":"S1"}`, mergedID))
 	if code != http.StatusConflict {
 		t.Fatalf("撤回已确认范围应被拒绝，实际 %d", code)
 	}
-
-	// 重复合并：同一比较再次合并生成另一条新线，互不影响。
-	code, resp = postJSON(t, srv, "/api/lines/merge", fmt.Sprintf(
-		`{"comparison_id":%q,"name":"再次合并","keep":"a","accept":[]}`, cmpID))
-	if code != http.StatusOK {
-		t.Fatalf("重复合并失败: %d %v", code, resp)
-	}
-	secondID := resp["line"].(map[string]any)["id"].(string)
-	if secondID == mergedID {
-		t.Fatalf("重复合并应生成新的研究线")
+	code, _ = postJSON(t, srv, "/api/lines/withdraw", fmt.Sprintf(`{"line":%q,"hash":"A2"}`, mergedID))
+	if code != http.StatusConflict {
+		t.Fatalf("撤回已确认检查点 A2 应被拒绝，实际 %d", code)
 	}
 
 	// 保存重开后：每个采用决定来自哪次比较仍可复核。
@@ -212,6 +241,10 @@ func TestResearchLineCompareMergeFlow(t *testing.T) {
 	if lineView["base_comparison"] != cmpID {
 		t.Fatalf("合并线应记录其来源比较 %s，实际 %v", cmpID, lineView["base_comparison"])
 	}
+	// 重开后合并线的确认检查点及其依据仍然完整。
+	if cp := snap["checkpoint"]; cp == nil || cp.(map[string]any)["hash"] != "A2" {
+		t.Fatalf("重开后合并线检查点应为 A2，实际 %v", cp)
+	}
 	// 原有两条线及其确认依据保持可回看。
 	code, resp = getJSON(t, srv2, "/api/lines/state?line="+lineA)
 	if code != http.StatusOK {
@@ -226,10 +259,10 @@ func TestResearchLineCompareMergeFlow(t *testing.T) {
 	if code != http.StatusOK || len(resp["comparisons"].([]any)) == 0 {
 		t.Fatalf("重开后比较历史应可查询: %d %v", code, resp)
 	}
-	// 研究线版本序列独立：合并线有多个版本且可回看任一版本。
-	code, resp = getJSON(t, srv2, "/api/lines/versions?line="+mergedID)
+	// 研究线版本序列独立：部分接纳线有多个版本且可回看任一版本。
+	code, resp = getJSON(t, srv2, "/api/lines/versions?line="+partialID)
 	if code != http.StatusOK || len(resp["versions"].([]any)) < 3 {
-		t.Fatalf("合并线应有独立版本序列（合并/迟到资料/撤回），实际 %v", resp)
+		t.Fatalf("部分接纳线应有独立版本序列（合并/迟到父块/撤回），实际 %v", resp)
 	}
 }
 

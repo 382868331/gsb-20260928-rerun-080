@@ -115,13 +115,14 @@ func TestMergeLinesAdoptionsAndDeferred(t *testing.T) {
 	cmp := CompareLines(la, lb, blocks, "C1")
 	merged, err := MergeLines(la, lb, cmp, MergeSpec{
 		Name: "合并线", KeepConfirmation: "a", Accept: []string{"A3"},
-	}, "LM")
+	}, "LM", blocks)
 	if err != nil {
 		t.Fatalf("合并失败: %v", err)
 	}
-	// A2 是 LA 独有但未选中：只接纳被选中的兼容资料。
-	if got := joinHashes(merged.Blocks); got != "A3,G,S1" {
-		t.Fatalf("合并线区块应为 A3,G,S1，实际 %s", got)
+	// 选择保留甲方确认：确认范围（A2 及其祖先）完整进入新线，
+	// 即使 A2 不在共同块中、也未被显式勾选。
+	if got := joinHashes(merged.Blocks); got != "A2,A3,G,S1" {
+		t.Fatalf("合并线区块应为 A2,A3,G,S1，实际 %s", got)
 	}
 	// 每个采用决定都记录来源比较与来源线。
 	adopt := map[string]model.Adoption{}
@@ -134,9 +135,12 @@ func TestMergeLinesAdoptionsAndDeferred(t *testing.T) {
 	if adopt["G"].SourceLine != "both" || adopt["A3"].SourceLine != "LA" {
 		t.Fatalf("采用来源应为 both/LA，实际 %+v", adopt)
 	}
-	// 保留 a 方确认：只有进入新线的检查点被保留（A2 未采用则不带入）。
-	if len(merged.Checkpoints) != 1 || merged.Checkpoints[0].Hash != "S1" {
-		t.Fatalf("只应保留 S1 检查点，实际 %+v", merged.Checkpoints)
+	if adopt["A2"].SourceLine != "LA" || adopt["A2"].ComparisonID != "C1" {
+		t.Fatalf("确认范围 A2 应记录来自 LA 的采用决定，实际 %+v", adopt["A2"])
+	}
+	// 保留 a 方确认：确认检查点及其依据完整继承（S1 与 A2）。
+	if len(merged.Checkpoints) != 2 {
+		t.Fatalf("甲方确认检查点应完整进入新线，实际 %+v", merged.Checkpoints)
 	}
 	// 冲突部分暂缓而非判为无效；原有两条线保持不变。
 	if len(merged.Deferred) != 2 {
@@ -148,19 +152,100 @@ func TestMergeLinesAdoptionsAndDeferred(t *testing.T) {
 	// 接纳冲突区块必须被拒绝。
 	if _, err := MergeLines(la, lb, cmp, MergeSpec{
 		Name: "x", KeepConfirmation: "a", Accept: []string{"B2"},
-	}, "LX"); err == nil {
+	}, "LX", blocks); err == nil {
 		t.Fatalf("接纳跨越确认边界的冲突区块应被拒绝")
+	}
+}
+
+func TestMergeKeepConfirmationSurvivesDeferredConflicts(t *testing.T) {
+	// 两条线确认不同的检查点：暂缓乙方冲突不能顺带删除甲方确认。
+	blocks, la, lb := lineFixture()
+	now := time.Now().UTC().Format(time.RFC3339)
+	lb.Checkpoints = append(lb.Checkpoints, model.Checkpoint{Hash: "B2", ConfirmedAt: now})
+	cmp := CompareLines(la, lb, blocks, "C1")
+	// 此时 A2/A3 跨越 LB 的检查点 B2，B2/B3 跨越 LA 的检查点 A2。
+	if len(cmp.Conflicts) != 4 {
+		t.Fatalf("双方后续资料应互相冲突，实际 %+v", cmp.Conflicts)
+	}
+	merged, err := MergeLines(la, lb, cmp, MergeSpec{
+		Name: "保留甲方", KeepConfirmation: "a",
+	}, "LM", blocks)
+	if err != nil {
+		t.Fatalf("合并失败: %v", err)
+	}
+	// 甲方确认范围完整进入新线，检查点不遗漏。
+	if got := joinHashes(merged.Blocks); got != "A2,G,S1" {
+		t.Fatalf("甲方确认范围应完整进入新线，实际 %s", got)
+	}
+	if len(merged.Checkpoints) != 2 {
+		t.Fatalf("甲方确认检查点 S1/A2 应完整保留，实际 %+v", merged.Checkpoints)
+	}
+	// 暂缓的是乙方冲突，甲方确认范围不进入暂缓。
+	for _, d := range merged.Deferred {
+		if d.Hash == "A2" || d.Hash == "S1" || d.Hash == "G" {
+			t.Fatalf("甲方确认范围不能被暂缓，实际 %+v", merged.Deferred)
+		}
+	}
+	if len(merged.Deferred) != 3 {
+		t.Fatalf("乙方冲突 B2/B3 与甲方未确认延伸 A3 应暂缓，实际 %+v", merged.Deferred)
+	}
+	// 快照中生效检查点为 A2，确认范围标记 confirmed。
+	snap := BuildLineSnapshot(merged, blocks, 1, "", nil)
+	if snap.Checkpoint == nil || snap.Checkpoint.Hash != "A2" {
+		t.Fatalf("合并线快照检查点应为 A2，实际 %+v", snap.Checkpoint)
+	}
+}
+
+func TestMergeAcceptMissingParentKeepsPending(t *testing.T) {
+	// 缺少父块的待接纳资料（冲突资料的后续延伸）可以被接纳：
+	// 保留待补充状态与出处，不能当成无效资料直接拒绝。
+	blocks, la, lb := lineFixture()
+	cmp := CompareLines(la, lb, blocks, "C1")
+	merged, err := MergeLines(la, lb, cmp, MergeSpec{
+		Name: "接纳缺父资料", KeepConfirmation: "a", Accept: []string{"B3"},
+	}, "LM", blocks)
+	if err != nil {
+		t.Fatalf("缺少父块的待接纳资料不应被拒绝: %v", err)
+	}
+	adopt := map[string]model.Adoption{}
+	for _, a := range merged.Adoptions {
+		adopt[a.Hash] = a
+	}
+	if adopt["B3"].SourceLine != "LB" || adopt["B3"].ComparisonID != "C1" {
+		t.Fatalf("B3 应记录来自 LB 的采用出处，实际 %+v", adopt["B3"])
+	}
+	snap := BuildLineSnapshot(merged, blocks, 1, "", nil)
+	var gap *model.PendingGap
+	for i := range snap.Line.PendingGaps {
+		if snap.Line.PendingGaps[i].Hash == "B3" {
+			gap = &snap.Line.PendingGaps[i]
+		}
+	}
+	if gap == nil || joinHashes(gap.MissingParents) != "B2" {
+		t.Fatalf("B3 应保留缺少父块 B2 的待补充状态，实际 %+v", snap.Line.PendingGaps)
+	}
+	// 被接纳的 B3 不再暂缓；直接冲突的父块 B2 仍暂缓。
+	for _, d := range merged.Deferred {
+		if d.Hash == "B3" {
+			t.Fatalf("已接纳的待补充资料不应再暂缓，实际 %+v", merged.Deferred)
+		}
+	}
+	// 补交迟到父块后缺口消失。
+	merged.Blocks = append(merged.Blocks, "B2")
+	snap2 := BuildLineSnapshot(merged, blocks, 2, "迟到父块", nil)
+	if len(snap2.Line.PendingGaps) != 0 {
+		t.Fatalf("迟到父块到达后待补充范围应消失，实际 %+v", snap2.Line.PendingGaps)
 	}
 }
 
 func TestMergePartialAcceptKeepsPendingGap(t *testing.T) {
 	blocks, la, lb := lineFixture()
 	cmp := CompareLines(la, lb, blocks, "C1")
-	// 只接纳 A3 而不接纳中间区块 A2：缺口保留待补充，
-	// 不拼接出从未存在的链。
+	// 保留乙方确认（检查点 S1），只接纳 A3 而不接纳中间区块 A2：
+	// 缺口保留待补充，不拼接出从未存在的链。
 	merged, err := MergeLines(la, lb, cmp, MergeSpec{
-		Name: "部分接纳", KeepConfirmation: "a", Accept: []string{"A3"},
-	}, "LM")
+		Name: "部分接纳", KeepConfirmation: "b", Accept: []string{"A3"},
+	}, "LM", blocks)
 	if err != nil {
 		t.Fatalf("合并失败: %v", err)
 	}

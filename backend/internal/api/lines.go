@@ -289,7 +289,7 @@ func (s *Server) handleLineMerge(w http.ResponseWriter, r *http.Request) {
 		Name:             name,
 		KeepConfirmation: req.Keep,
 		Accept:           req.Accept,
-	}, "")
+	}, "", s.Store.AllBlocks())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
