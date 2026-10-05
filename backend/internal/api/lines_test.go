@@ -281,3 +281,199 @@ func TestLineCheckpointRejectsForeignBlock(t *testing.T) {
 		t.Fatalf("不属于研究线的区块不能在该线确认，实际 %d", code)
 	}
 }
+
+// 缺陷场景：乙方提交的 gap-tip T 缺少父块 P（P 全局也未导入），
+// 且甲方已确认 S1。T 必须作为有出处的待补充项被接纳保留，而不是
+// 当作不能接纳的资料直接拒绝；父块 P 迟到（指向已确认 S1）后重新
+// 判断为已选确认的后续。同时验证重复合并、撤回、重启与原线保留。
+func TestResearchLineGapTipKeptThenLateParentFlow(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(st)
+	mkBlock := func(hash, prev string, txid string, ins ...string) model.Block {
+		tr := model.Transaction{TxID: txid, Outputs: []model.TxOutput{{Value: 1}}}
+		for _, in := range ins {
+			tr.Inputs = append(tr.Inputs, model.TxInput{TxID: in, Vout: 0})
+		}
+		return model.Block{Hash: hash, PrevHash: prev, Work: 10, Txs: []model.Transaction{tr}}
+	}
+	bG := mkBlock("G", "", "coin-G")
+	bS1 := mkBlock("S1", "G", "coin-S1", "coin-G")
+	bT := mkBlock("T", "P", "txT", "coin-S1")  // 父块 P 此刻全局缺失
+	bP := mkBlock("P", "S1", "txP", "coin-S1") // 迟到父块，指向已确认 S1
+
+	_, respA := postJSON(t, srv, "/api/lines", `{"name":"甲方线"}`)
+	lineA := respA["line"].(map[string]any)["id"].(string)
+	_, respB := postJSON(t, srv, "/api/lines", `{"name":"乙方线"}`)
+	lineB := respB["line"].(map[string]any)["id"].(string)
+
+	importToLine(t, srv, lineA, bG, bS1)
+	importToLine(t, srv, lineB, bG, bS1, bT)
+	code, _ := postJSON(t, srv, "/api/lines/checkpoint",
+		fmt.Sprintf(`{"line":%q,"hash":"S1"}`, lineA))
+	if code != http.StatusOK {
+		t.Fatalf("甲方确认 S1 失败: %d", code)
+	}
+	code, resp := postJSON(t, srv, "/api/lines/compare",
+		fmt.Sprintf(`{"a":%q,"b":%q}`, lineA, lineB))
+	if code != http.StatusOK {
+		t.Fatalf("比较失败: %d %v", code, resp)
+	}
+	cmpObj := resp["comparison"].(map[string]any)
+	cmpID := cmpObj["id"].(string)
+	if len(cmpObj["conflicts"].([]any)) != 0 {
+		t.Fatalf("父块缺失时 T 不能被记为冲突，实际 %v", cmpObj["conflicts"])
+	}
+	if got := fmt.Sprint(cmpObj["compatible_b"]); got != "[T]" {
+		t.Fatalf("T 应作为乙方可接纳的待补充资料，实际 %s", got)
+	}
+
+	// 保留甲方确认并接纳缺父块的 T：应成功，T 在快照中保留待补充状态与乙方出处。
+	code, resp = postJSON(t, srv, "/api/lines/merge",
+		fmt.Sprintf(`{"comparison_id":%q,"name":"合并-甲","keep":"a","accept":["T"]}`, cmpID))
+	if code != http.StatusOK {
+		t.Fatalf("缺父块的 gap-tip 应被接纳保留，不应直接拒绝: %d %v", code, resp)
+	}
+	merged := resp["line"].(map[string]any)["id"].(string)
+	state := resp["state"].(map[string]any)
+	view := state["line"].(map[string]any)
+	gaps := view["pending_gaps"].([]any)
+	if len(gaps) != 1 {
+		t.Fatalf("应有 1 条待补充范围，实际 %v", gaps)
+	}
+	gap := gaps[0].(map[string]any)
+	if gap["hash"] != "T" || fmt.Sprint(gap["missing_parents"]) != "[P]" ||
+		gap["source_line"] != lineB {
+		t.Fatalf("T 应保留缺父块 P 的待补充状态及乙方出处，实际 %v", gap)
+	}
+	// 待接纳状态下链视图不拼接：T 高度 0、范围 pending；无冲突链汇总。
+	if conflicts := state["conflicts"].([]any); len(conflicts) != 0 {
+		t.Fatalf("缺父块资料不能汇总为冲突链，实际 %v", conflicts)
+	}
+	var tBlock map[string]any
+	for _, blk := range state["blocks"].([]any) {
+		b := blk.(map[string]any)
+		if b["hash"] == "T" {
+			tBlock = b
+		}
+	}
+	if tBlock == nil || tBlock["height"].(float64) != 0 || tBlock["scope"] != "pending" {
+		t.Fatalf("待补充的 T 应为高度 0、范围 pending，实际 %+v", tBlock)
+	}
+	// 交易引用 txT->coin-S1：目标已在确认范围，但引用方 T 待补充，
+	// 引用不应提前认作当前有效。
+	for _, rAny := range state["tx_refs"].([]any) {
+		r := rAny.(map[string]any)
+		if r["from_txid"] == "txT" && r["active"] == true {
+			t.Fatalf("待补充资料 T 发出的引用不能提前认作有效: %+v", r)
+		}
+	}
+
+	// 重复提交同一合并决定：生成另一条独立新线，互不影响。
+	code, resp = postJSON(t, srv, "/api/lines/merge",
+		fmt.Sprintf(`{"comparison_id":%q,"name":"合并-甲-再次","keep":"a","accept":["T"]}`, cmpID))
+	if code != http.StatusOK {
+		t.Fatalf("重复合并应成功: %d %v", code, resp)
+	}
+	mergedAgain := resp["line"].(map[string]any)["id"].(string)
+	if mergedAgain == merged {
+		t.Fatalf("重复合并应生成新研究线")
+	}
+	// 保留乙方确认同样可生成一条独立新线。
+	code, resp = postJSON(t, srv, "/api/lines/merge",
+		fmt.Sprintf(`{"comparison_id":%q,"name":"合并-乙","keep":"b","accept":["T"]}`, cmpID))
+	if code != http.StatusOK {
+		t.Fatalf("保留乙方合并应成功: %d %v", code, resp)
+	}
+	_ = resp["line"].(map[string]any)["id"].(string) // 保留乙方的合并线同样保留
+	if resp["state"].(map[string]any)["checkpoint"] != nil {
+		// 乙方未确认检查点，新线不应携带检查点。
+		t.Fatalf("乙方无确认，合并线不应继承检查点")
+	}
+
+	// 撤回未确认资料 T（尚未补父块，T 为未确认待补充资料）：允许。
+	code, resp = postJSON(t, srv, "/api/lines/withdraw",
+		fmt.Sprintf(`{"line":%q,"hash":"T"}`, merged))
+	if code != http.StatusOK {
+		t.Fatalf("待补充的未确认资料 T 应允许撤回: %d %v", code, resp)
+	}
+	for _, blk := range resp["state"].(map[string]any)["blocks"].([]any) {
+		if blk.(map[string]any)["hash"] == "T" {
+			t.Fatalf("撤回后 T 不应再出现在链视图")
+		}
+	}
+	// 已确认范围不能撤回。
+	code, _ = postJSON(t, srv, "/api/lines/withdraw",
+		fmt.Sprintf(`{"line":%q,"hash":"S1"}`, merged))
+	if code != http.StatusConflict {
+		t.Fatalf("撤回已确认范围应 409，实际 %d", code)
+	}
+
+	// 在“再次合并”线上补交迟到父块 P：缺口消失，T 重判为 S1 后续。
+	importToLine(t, srv, mergedAgain, bP)
+	code, resp = getJSON(t, srv, "/api/lines/state?line="+mergedAgain)
+	if code != http.StatusOK {
+		t.Fatalf("读取再次合并线失败: %d", code)
+	}
+	snap2 := resp["snapshot"].(map[string]any)
+	view2 := snap2["line"].(map[string]any)
+	if gs := view2["pending_gaps"].([]any); len(gs) != 0 {
+		t.Fatalf("父块 P 到达后待补充范围应消失，实际 %v", gs)
+	}
+	var t2 map[string]any
+	for _, blk := range snap2["blocks"].([]any) {
+		b := blk.(map[string]any)
+		if b["hash"] == "T" {
+			t2 = b
+		}
+	}
+	if t2 == nil || t2["height"].(float64) != 3 || t2["scope"] != "tentative" {
+		t.Fatalf("补齐后 T 应为高度 3、暂定后续，实际 %+v", t2)
+	}
+	// 采用审计：P 补交后仍记录来源比较与乙方出处。
+	adoptions := view2["adoptions"].(map[string]any)
+	if ap, ok := adoptions["P"].(map[string]any); !ok ||
+		ap["comparison_id"] != cmpID || ap["source_line"] != lineB {
+		t.Fatalf("补交 P 应保留来源比较与乙方出处，实际 %+v", adoptions)
+	}
+
+	// 重启后复核：待补充/采用决定、确认范围与版本序列一致，原线保留。
+	st2, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv2 := New(st2)
+	code, resp = getJSON(t, srv2, "/api/lines/state?line="+mergedAgain)
+	if code != http.StatusOK {
+		t.Fatalf("重启后读取合并线失败: %d", code)
+	}
+	view3 := resp["snapshot"].(map[string]any)["line"].(map[string]any)
+	if len(view3["pending_gaps"].([]any)) != 0 {
+		t.Fatalf("重启后 T 仍应是已补齐的正常后续")
+	}
+	// 原甲方研究线及其确认始终保留可回看。
+	code, resp = getJSON(t, srv2, "/api/lines/state?line="+lineA)
+	if code != http.StatusOK {
+		t.Fatalf("原甲方线应保留: %d", code)
+	}
+	cp := resp["snapshot"].(map[string]any)["checkpoint"]
+	if cp == nil || cp.(map[string]any)["hash"] != "S1" {
+		t.Fatalf("原甲方线确认 S1 应保留，实际 %v", cp)
+	}
+	// 原乙方线也保留。
+	code, _ = getJSON(t, srv2, "/api/lines/state?line="+lineB)
+	if code != http.StatusOK {
+		t.Fatalf("原乙方线应保留: %d", code)
+	}
+	// 合并线数量：merged、mergedAgain、mergedB 三条，且原两线仍在。
+	code, resp = getJSON(t, srv2, "/api/lines")
+	if code != http.StatusOK {
+		t.Fatalf("列出研究线失败: %d", code)
+	}
+	if n := len(resp["lines"].([]any)); n != 5 {
+		t.Fatalf("原两线 + 三条合并线应共 5 条，实际 %d", n)
+	}
+}

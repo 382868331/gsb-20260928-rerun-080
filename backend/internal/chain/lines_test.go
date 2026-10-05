@@ -283,3 +283,161 @@ func joinHashes(hashes []string) string {
 	}
 	return out
 }
+
+// 缺父块 gap-tip 夹具：乙方资料 T 声称父块为 P，但 P 尚未导入任何地方
+// （全局缺失）。甲方确认 S1（G->S1）；T 与 S1 的关系此刻无法证明。
+func missingParentFixture() ([]model.Block, *model.ResearchLine, *model.ResearchLine, model.Block) {
+	tx := func(id string, ins ...string) model.Transaction {
+		t := model.Transaction{TxID: id, Outputs: []model.TxOutput{{Value: 1}}}
+		for _, in := range ins {
+			t.Inputs = append(t.Inputs, model.TxInput{TxID: in, Vout: 0})
+		}
+		return t
+	}
+	blocks := []model.Block{
+		{Hash: "G", PrevHash: "", Work: 100, Txs: []model.Transaction{tx("coin-G")}},
+		{Hash: "S1", PrevHash: "G", Work: 10, Txs: []model.Transaction{tx("coin-S1", "coin-G")}},
+		// T 指向尚未到达的父块 P（PrevHash=P，但 P 不在 blocks 中）。
+		{Hash: "T", PrevHash: "P", Work: 10, Txs: []model.Transaction{tx("txT", "coin-S1")}},
+	}
+	// 迟到父块：P 指向甲方已确认的 S1，因此 T 实为已确认 S1 的后续。
+	lateParent := model.Block{Hash: "P", PrevHash: "S1", Work: 10, Txs: []model.Transaction{tx("txP", "coin-S1")}}
+	now := time.Now().UTC().Format(time.RFC3339)
+	la := &model.ResearchLine{
+		ID: "LA", Name: "甲方", CreatedAt: now,
+		Blocks:      []string{"G", "S1"},
+		Checkpoints: []model.Checkpoint{{Hash: "S1", ConfirmedAt: now}},
+	}
+	lb := &model.ResearchLine{
+		ID: "LB", Name: "乙方", CreatedAt: now,
+		Blocks: []string{"G", "S1", "T"},
+	}
+	return blocks, la, lb, lateParent
+}
+
+// 父块缺失时 gap-tip 不能被当作有证据的冲突：比较中它应归入
+// 可接纳资料，合并接纳后作为有出处的待补充项保留；父块迟到并
+// 补齐后重新判断为已确认检查点的正常后续。
+func TestMissingParentGapTipKeptThenLateParentRejudged(t *testing.T) {
+	blocks, la, lb, lateParent := missingParentFixture()
+	cmp := CompareLines(la, lb, blocks, "C1")
+	if len(cmp.Conflicts) != 0 {
+		t.Fatalf("父块缺失时关系未知，不能记为冲突，实际 %+v", cmp.Conflicts)
+	}
+	if got := joinHashes(cmp.CompatibleB); got != "T" {
+		t.Fatalf("缺父块的 T 应归入乙方可接纳资料，实际 %v", cmp.CompatibleB)
+	}
+
+	// 保留甲方确认并接纳 T：不应被拒绝，T 作为缺父块的待补充项保留。
+	merged, err := MergeLinesWithBlocks(la, lb, blocks, cmp, MergeSpec{
+		Name: "保留甲方", KeepConfirmation: "a", Accept: []string{"T"},
+	}, "LM")
+	if err != nil {
+		t.Fatalf("缺父块的 gap-tip 应被接纳为待补充项，实际被拒绝: %v", err)
+	}
+	if got := joinHashes(merged.Blocks); got != "G,S1,T" {
+		t.Fatalf("合并线应含 T，实际 %s", got)
+	}
+	if len(merged.Deferred) != 0 {
+		t.Fatalf("缺父块资料不能暂缓为冲突，实际 %+v", merged.Deferred)
+	}
+	snap := BuildLineSnapshot(merged, blocks, 1, "合并", nil)
+	var gap *model.PendingGap
+	for i := range snap.Line.PendingGaps {
+		if snap.Line.PendingGaps[i].Hash == "T" {
+			gap = &snap.Line.PendingGaps[i]
+		}
+	}
+	if gap == nil || joinHashes(gap.MissingParents) != "P" || gap.SourceLine != "LB" {
+		t.Fatalf("T 应保留缺父块 P 的待补充状态及乙方出处，实际 %+v", snap.Line.PendingGaps)
+	}
+	for _, b := range snap.Blocks {
+		if b.Hash == "T" && b.Scope != model.ScopePending {
+			t.Fatalf("缺父块的 T 应为待补充范围，实际 %s", b.Scope)
+		}
+	}
+
+	// 补交指向已确认 S1 的父块 P：缺口消失，T 重新判断为 S1 的正常后续。
+	withParent := append([]model.Block{}, append(blocks, lateParent)...)
+	merged.Blocks = append(merged.Blocks, "P")
+	merged.Adoptions = append(merged.Adoptions, model.Adoption{
+		Hash: "P", ComparisonID: "C1", SourceLine: "LB", AdoptedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	snap2 := BuildLineSnapshot(merged, withParent, 2, "补交父块 P", nil)
+	if len(snap2.Line.PendingGaps) != 0 {
+		t.Fatalf("父块到达后待补充范围应消失，实际 %+v", snap2.Line.PendingGaps)
+	}
+	for _, b := range snap2.Blocks {
+		if b.Hash == "T" {
+			if b.Scope != model.ScopeTentative {
+				t.Fatalf("补齐后 T 应为检查点 S1 之后的暂定后续，实际 %s", b.Scope)
+			}
+			if b.Height != 3 {
+				t.Fatalf("补齐后 T 高度应为 3（G,S1,P,T），实际 %d", b.Height)
+			}
+		}
+	}
+}
+
+// 即使比较发生在父块缺失时（旧比较把 T 视为兼容），只要接纳时已有
+// 证据证明 T 与保留方检查点确属不同分叉，就必须拒绝；反之旧比较
+// 标记的未知关系，在父块证明为正常后续后应允许重交合并决定接纳。
+func TestMergeRejudgesWithCurrentBlocks(t *testing.T) {
+	blocks, la, lb, lateParent := missingParentFixture()
+	cmp := CompareLines(la, lb, blocks, "C1")
+
+	// 场景一：父块到达后证明 T 是 S1 之后的正常分叉冲突：构造
+	// 甲方检查点 S1 之后确认另一条子链，使 P->S1 仍属于 S1 后续
+	// （兼容）。这里改为验证“迟到父块证明为分叉冲突”：新增甲方
+	// 已确认的检查点 Q（G->S1->Q），而 P 从 S1 另一子位延伸，
+	// T 经 P 仍从 S1 延伸，因此不冲突。真正冲突由独立根 R 链给出。
+	rival := model.Block{Hash: "R", PrevHash: "G", Work: 10, Txs: nil}
+	lb.Blocks = append(lb.Blocks, "R")
+	blocksWithRival := append(append([]model.Block{}, blocks...), rival)
+	cmp2 := CompareLines(la, lb, blocksWithRival, "C2")
+	hasR := false
+	for _, c := range cmp2.Conflicts {
+		if c.Hash == "R" {
+			hasR = true
+		}
+	}
+	if !hasR {
+		t.Fatalf("父链完整且从 G 另一子位延伸的 R 与检查点 S1 确属冲突，应记录")
+	}
+	if _, err := MergeLinesWithBlocks(la, lb, blocksWithRival, cmp2, MergeSpec{
+		Name: "x", KeepConfirmation: "a", Accept: []string{"R"},
+	}, "LX"); err == nil {
+		t.Fatalf("有证据证明跨越 S1 的 R 必须被拒绝接纳")
+	}
+
+	// 场景二：旧比较 C1 之后父块 P 到达并证明 T 是 S1 的正常后续，
+	// 用旧比较重交合并决定也应成功（按当前区块重判）；随后 P 补交进入
+	// 合并线，T 重新判断为 S1 的正常后续。
+	withParent := append(append([]model.Block{}, blocks...), lateParent)
+	merged, err := MergeLinesWithBlocks(la, lb, withParent, cmp, MergeSpec{
+		Name: "父块已到", KeepConfirmation: "a", Accept: []string{"T"},
+	}, "LM2")
+	if err != nil {
+		t.Fatalf("父块证明 T 为 S1 后续后，重交合并决定应成功: %v", err)
+	}
+	merged.Blocks = append(merged.Blocks, "P")
+	merged.Adoptions = append(merged.Adoptions, model.Adoption{
+		Hash: "P", ComparisonID: "C1", SourceLine: "LB", AdoptedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	snap := BuildLineSnapshot(merged, withParent, 1, "合并", nil)
+	if len(snap.Line.PendingGaps) != 0 {
+		t.Fatalf("父块 P 补交后不应再有待补充范围，实际 %+v", snap.Line.PendingGaps)
+	}
+	foundT := false
+	for _, b := range snap.Blocks {
+		if b.Hash == "T" {
+			foundT = true
+			if b.Scope != model.ScopeTentative {
+				t.Fatalf("T 应为 S1 之后的暂定后续，实际 %s", b.Scope)
+			}
+		}
+	}
+	if !foundT {
+		t.Fatalf("合并线应包含 T")
+	}
+}

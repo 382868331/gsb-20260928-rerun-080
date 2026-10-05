@@ -83,7 +83,7 @@ export function LinePanel({ lines, currentLine, snapshot, onSelectLine, onCreate
     setKeep(nextKeep);
     const sourceHashes = nextKeep === "a" ? comparison.only_a : comparison.only_b;
     const ownIDs = new Set(sourceHashes);
-    setAccept((prev) => new Set([...prev.filter((h) => ownIDs.has(h) || comparison.shared.includes(h)), ...sourceHashes]));
+    setAccept((prev) => new Set([...[...prev].filter((h) => ownIDs.has(h) || comparison.shared.includes(h)), ...sourceHashes]));
   }
 
   const lineView = snapshot?.line ?? null;

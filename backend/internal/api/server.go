@@ -211,29 +211,80 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 				baseComparison = &cmp
 			}
 		}
+		// 迟到父块归属：新导入区块若填补了某条已接纳待补充资料缺失的父块，
+		// 继承该待补充块记录的出处（来源线与基础比较），使补交材料能够
+		// 恢复先前接纳意图，而不是成为没有出处的孤立资料。
+		lateParentSource := map[string]string{}
+		if line.BaseComparison != "" {
+			allByHash := map[string]model.Block{}
+			for _, blk := range s.Store.AllBlocks() {
+				allByHash[blk.Hash] = blk
+			}
+			adoptedSource := map[string]string{}
+			for _, adoption := range line.Adoptions {
+				if adoption.ComparisonID == line.BaseComparison {
+					adoptedSource[adoption.Hash] = adoption.SourceLine
+				}
+			}
+			newInBatch := map[string]bool{}
+			for _, b := range req.Blocks {
+				newInBatch[b.Hash] = true
+			}
+			// 先从已有采用决定寻找其缺失父块的出处。
+			for childHash, source := range adoptedSource {
+				child, ok := allByHash[childHash]
+				if !ok || child.PrevHash == "" {
+					continue
+				}
+				if newInBatch[child.PrevHash] {
+					lateParentSource[child.PrevHash] = source
+				}
+			}
+			// 同一批内多代父块互相填补：沿父指针在批次内传播出处。
+			progress := true
+			for progress {
+				progress = false
+				for _, b := range req.Blocks {
+					if _, done := lateParentSource[b.Hash]; done || b.PrevHash == "" {
+						continue
+					}
+					if src, ok := lateParentSource[b.PrevHash]; ok {
+						lateParentSource[b.Hash] = src
+						progress = true
+					}
+				}
+			}
+		}
 		changed := false
 		for _, b := range req.Blocks {
 			if !inLine[b.Hash] {
 				line.Blocks = append(line.Blocks, b.Hash)
 				inLine[b.Hash] = true
-				if baseComparison != nil && !existingAdoption[b.Hash] {
+				if line.BaseComparison != "" && baseComparison != nil && !existingAdoption[b.Hash] {
 					sourceLine := "both"
 					eligible := false
-					for _, h := range baseComparison.OnlyA {
-						if h == b.Hash && chosenSourceLines[baseComparison.LineA] {
-							sourceLine = baseComparison.LineA
-							eligible = true
+					// 优先：作为已接纳待补充块的迟到父块，继承其出处，
+					// 使补交材料能够恢复先前接纳意图。
+					if src, ok := lateParentSource[b.Hash]; ok {
+						sourceLine = src
+						eligible = true
+					} else {
+						for _, h := range baseComparison.OnlyA {
+							if h == b.Hash && chosenSourceLines[baseComparison.LineA] {
+								sourceLine = baseComparison.LineA
+								eligible = true
+							}
 						}
-					}
-					for _, h := range baseComparison.OnlyB {
-						if h == b.Hash && chosenSourceLines[baseComparison.LineB] {
-							sourceLine = baseComparison.LineB
-							eligible = true
+						for _, h := range baseComparison.OnlyB {
+							if h == b.Hash && chosenSourceLines[baseComparison.LineB] {
+								sourceLine = baseComparison.LineB
+								eligible = true
+							}
 						}
-					}
-					for _, h := range baseComparison.Shared {
-						if h == b.Hash {
-							eligible = true
+						for _, h := range baseComparison.Shared {
+							if h == b.Hash {
+								eligible = true
+							}
 						}
 					}
 					if eligible {

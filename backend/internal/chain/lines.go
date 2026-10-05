@@ -59,6 +59,36 @@ func (idx *BlockIndex) Descends(from, target string) bool {
 	}
 }
 
+// ChainComplete 判断 h 沿父链回溯是否能一直走到链根（PrevHash 为空）。
+// 若中途遇到尚未导入的父区块，则 h 与其他资料的关系尚无法证明：
+// 这种资料只能作为有出处的待补充项保留，不能提前当作冲突拒绝。
+func (idx *BlockIndex) ChainComplete(h string) bool {
+	for {
+		b, ok := idx.byHash[h]
+		if !ok {
+			return false
+		}
+		if b.PrevHash == "" {
+			return true
+		}
+		if _, parentExists := idx.byHash[b.PrevHash]; !parentExists {
+			return false
+		}
+		h = b.PrevHash
+	}
+}
+
+// ProvenDiverges 判断 h 是否有证据证明与检查点 cp 分属不同分叉：
+// 既不是 cp 的后续，cp 也不是 h 的祖先，且 h 的父链完整可溯到链根。
+// 父链缺失时关系未知（可能是迟到父块尚未到达），返回 false，
+// 由调用方把该资料作为待补充项保留，等父块到达后重新判断。
+func (idx *BlockIndex) ProvenDiverges(h, cp string) bool {
+	if h == cp || idx.Descends(h, cp) || idx.Descends(cp, h) {
+		return false
+	}
+	return idx.ChainComplete(h)
+}
+
 // EffectiveCheckpoint 返回研究线已确认检查点中高度最高者
 // （检查点区块必须属于该线，高度由链接关系计算）。
 func EffectiveCheckpoint(line *model.ResearchLine, idx *BlockIndex) *model.Checkpoint {
@@ -142,13 +172,16 @@ func CompareLines(a, b *model.ResearchLine, blocks []model.Block, id string) mod
 
 	cpA := EffectiveCheckpoint(a, idx)
 	cpB := EffectiveCheckpoint(b, idx)
-	// 跨越确认边界：区块与对方的生效检查点互不互为祖先（真正分叉），
-	// 而不是检查点之前的历史或之后的正常延伸。
+	// 跨越确认边界：只有父链完整可溯、且与对方生效检查点确属不同
+	// 分叉的区块才是“有证据证明的冲突”。缺少父块的 gap-tip 与检查点
+	// 的关系尚未可知（父块可能迟到），先归入兼容的待补充资料，
+	// 接纳后在快照中以 pending_gaps 保留出处，父块到达后再重新判断，
+	// 而不是在此刻直接当作不能接纳的资料拒绝。
 	crosses := func(h string, cp *model.Checkpoint) bool {
 		if cp == nil || h == cp.Hash {
 			return false
 		}
-		return !idx.Descends(h, cp.Hash) && !idx.Descends(cp.Hash, h)
+		return idx.ProvenDiverges(h, cp.Hash)
 	}
 	conflictSet := map[string]bool{}
 	for _, h := range cmp.OnlyA {
@@ -264,6 +297,16 @@ func MergeLinesWithBlocks(a, b *model.ResearchLine, blocks []model.Block, cmp mo
 		shared[h] = true
 	}
 	keepCP := EffectiveCheckpoint(keep, idx)
+	// provenConflict 判断某区块当前是否有证据证明跨越新线所选检查点。
+	// 使用当前区块集合重算：比较可能发生在父块迟到之前，接纳或重交
+	// 合并决定时必须按此刻已有的链接关系重新判断。只有父链完整且确属
+	// 不同分叉才拒绝；父块仍缺失则允许接纳，由快照 pending_gaps 保留。
+	provenConflict := func(h string) bool {
+		if keepCP == nil {
+			return false
+		}
+		return idx.ProvenDiverges(h, keepCP.Hash)
+	}
 	// 选中某条线的确认即继承该确认覆盖的完整范围，即使这些独有确认块
 	// 未出现在 accept 中，或在双向比较中被另一条线的检查点标为冲突。
 	if keepCP != nil {
@@ -324,9 +367,28 @@ func MergeLinesWithBlocks(a, b *model.ResearchLine, blocks []model.Block, cmp mo
 			continue
 		}
 		seenAccept[h] = true
+		// 父块可能在比较之后才迟到：按当前区块集合重新判断，只有此刻
+		// 已有证据证明跨越所选检查点才拒绝；关系未知（缺父块）时允许
+		// 接纳并交由快照 pending_gaps 保留出处。
+		if provenConflict(h) {
+			cpHash := ""
+			if keepCP != nil {
+				cpHash = keepCP.Hash
+			}
+			return nil, fmt.Errorf(
+				"区块 %s 已有证据证明跨越研究线 %s 已确认检查点 %s，不能接纳（冲突部分只能暂缓）",
+				h, keep.ID, cpHash)
+		}
 		source, ok := compatible[h]
 		if !ok {
-			return nil, fmt.Errorf("区块 %s 不在两线兼容后续资料中，不能接纳（冲突部分只能暂缓）", h)
+			switch {
+			case keepBlocks[h]:
+				source = keep.ID
+			case inOtherLine(other, h):
+				source = other.ID
+			default:
+				return nil, fmt.Errorf("区块 %s 不在两条研究线的资料中，不能接纳", h)
+			}
 		}
 		addBlock(h, source)
 	}
@@ -468,4 +530,15 @@ func lineAdoption(line *model.ResearchLine, hash string) (model.Adoption, bool) 
 		}
 	}
 	return model.Adoption{}, false
+}
+
+// inOtherLine 判断区块是否属于某条来源研究线（用于为迟到补判的
+// 待补充资料记录出处）。
+func inOtherLine(line *model.ResearchLine, hash string) bool {
+	for _, h := range line.Blocks {
+		if h == hash {
+			return true
+		}
+	}
+	return false
 }
