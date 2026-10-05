@@ -273,6 +273,126 @@ func TestLineSnapshotIndependentSourcesAfterWithdraw(t *testing.T) {
 	}
 }
 
+// 缺失父块的 gap-tip 不是冲突：作为有出处的待补充项保留可接纳；
+// 父块迟到后重新判断是否属于已选确认的后续；只有祖先链完整且
+// 确实跨越确认边界时才拒绝。
+func TestGapTipKeptAsPendingUntilParentArrives(t *testing.T) {
+	tx := func(id string, ins ...string) model.Transaction {
+		tr := model.Transaction{TxID: id, Outputs: []model.TxOutput{{Value: 1}}}
+		for _, in := range ins {
+			tr.Inputs = append(tr.Inputs, model.TxInput{TxID: in, Vout: 0})
+		}
+		return tr
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	// X 的父块 P 尚未到达（全局缺失）；Y 的祖先链完整且与 A2 分叉。
+	blocks := []model.Block{
+		{Hash: "G", PrevHash: "", Work: 100, Txs: []model.Transaction{tx("coin-G")}},
+		{Hash: "S1", PrevHash: "G", Work: 10, Txs: []model.Transaction{tx("coin-S1", "coin-G")}},
+		{Hash: "A2", PrevHash: "S1", Work: 10, Txs: []model.Transaction{tx("txA2", "coin-S1")}},
+		{Hash: "X", PrevHash: "P", Work: 10, Txs: []model.Transaction{tx("txX2", "txA2")}},
+		{Hash: "Y", PrevHash: "S1", Work: 10, Txs: []model.Transaction{tx("txY", "coin-S1")}},
+	}
+	la := &model.ResearchLine{
+		ID: "LA", Name: "甲方", CreatedAt: now,
+		Blocks:      []string{"G", "S1", "A2"},
+		Checkpoints: []model.Checkpoint{{Hash: "A2", ConfirmedAt: now}},
+	}
+	lb := &model.ResearchLine{
+		ID: "LB", Name: "乙方", CreatedAt: now,
+		Blocks: []string{"G", "S1", "X", "Y"},
+	}
+	cmp := CompareLines(la, lb, blocks, "C1")
+	if got := joinHashes(cmp.CompatibleB); got != "X" {
+		t.Fatalf("缺失父块的 X 应作为可接纳的待补充项，实际兼容集合 %v（冲突 %v）", got, cmp.Conflicts)
+	}
+	if len(cmp.Conflicts) != 1 || cmp.Conflicts[0].Hash != "Y" {
+		t.Fatalf("只有祖先链完整且跨越确认边界的 Y 应判为冲突，实际 %+v", cmp.Conflicts)
+	}
+
+	// 保留甲方确认合并：接纳 gap-tip X 不再被拒绝。
+	merged, err := MergeLinesWithBlocks(la, lb, blocks, cmp, MergeSpec{
+		Name: "保留甲方", KeepConfirmation: "a", Accept: []string{"X"},
+	}, "LM")
+	if err != nil {
+		t.Fatalf("接纳缺失父块的待补充资料不应被拒绝: %v", err)
+	}
+	if got := joinHashes(merged.Blocks); got != "A2,G,S1,X" {
+		t.Fatalf("合并线区块应为 A2,G,S1,X，实际 %s", got)
+	}
+	// 有完整证据的冲突 Y 仍拒绝接纳。
+	if _, err := MergeLinesWithBlocks(la, lb, blocks, cmp, MergeSpec{
+		Name: "x", KeepConfirmation: "a", Accept: []string{"Y"},
+	}, "LX"); err == nil {
+		t.Fatalf("有证据证明跨越确认边界的 Y 应被拒绝接纳")
+	}
+
+	snap := BuildLineSnapshot(merged, blocks, 1, "", nil)
+	var gap *model.PendingGap
+	for i := range snap.Line.PendingGaps {
+		if snap.Line.PendingGaps[i].Hash == "X" {
+			gap = &snap.Line.PendingGaps[i]
+		}
+	}
+	if gap == nil || joinHashes(gap.MissingParents) != "P" || gap.SourceLine != "LB" {
+		t.Fatalf("X 应保留缺少父块 P 的待补充状态与 LB 出处，实际 %+v", snap.Line.PendingGaps)
+	}
+	for _, b := range snap.Blocks {
+		if b.Hash == "X" && b.Scope != model.ScopePending {
+			t.Fatalf("父块缺失时 X 应为待补充范围，实际 %s", b.Scope)
+		}
+	}
+	for _, r := range snap.TxRefs {
+		if r.FromTxID == "txX2" && r.Active {
+			t.Fatalf("X 未接入主链前 txX2->txA2 不应认作当前有效: %+v", r)
+		}
+	}
+
+	// 迟到父块 P 指向已确认的 A2：重新判断后 X 属于已选确认的后续。
+	late := append(append([]model.Block{}, blocks...),
+		model.Block{Hash: "P", PrevHash: "A2", Work: 10, Txs: []model.Transaction{tx("txP", "txA2")}})
+	merged2 := *merged
+	merged2.Blocks = append(append([]string{}, merged.Blocks...), "P")
+	snap2 := BuildLineSnapshot(&merged2, late, 2, "迟到父块", nil)
+	if len(snap2.Line.PendingGaps) != 0 {
+		t.Fatalf("父块到达后待补充范围应消失，实际 %+v", snap2.Line.PendingGaps)
+	}
+	for _, b := range snap2.Blocks {
+		if b.Hash == "X" && (b.Scope != model.ScopeTentative || !b.Canonical || b.Height != 4) {
+			t.Fatalf("X 应成为确认范围之后的暂定主链块（高度 4），实际 %+v", b)
+		}
+		if b.Hash == "A2" && b.Scope != model.ScopeConfirmed {
+			t.Fatalf("A2 应在确认范围，实际 %s", b.Scope)
+		}
+	}
+	foundRef := false
+	for _, r := range snap2.TxRefs {
+		if r.FromTxID == "txX2" && r.ToTxID == "txA2" {
+			foundRef = true
+			if !r.Active || r.FromScope != model.ScopeTentative || r.ToScope != model.ScopeConfirmed {
+				t.Fatalf("补齐后 txX2->txA2 应为当前有效引用，实际 %+v", r)
+			}
+		}
+	}
+	if !foundRef {
+		t.Fatalf("补齐后应存在 txX2->txA2 引用")
+	}
+
+	// 若迟到父块证明该资料与已选确认矛盾（父链接到确认范围之外），
+	// 重新判断为冲突而不是拼进主链。
+	rival := append(append([]model.Block{}, blocks...),
+		model.Block{Hash: "P", PrevHash: "G", Work: 10, Txs: []model.Transaction{tx("txP")}})
+	snap3 := BuildLineSnapshot(&merged2, rival, 3, "矛盾父块", nil)
+	for _, b := range snap3.Blocks {
+		if b.Hash == "X" && b.Scope != model.ScopeConflict {
+			t.Fatalf("父块证明矛盾时 X 应标记为冲突范围，实际 %s", b.Scope)
+		}
+	}
+	if len(snap3.Conflicts) == 0 {
+		t.Fatalf("父块证明矛盾时应记录冲突，实际 %+v", snap3.Conflicts)
+	}
+}
+
 func joinHashes(hashes []string) string {
 	out := ""
 	for i, h := range hashes {

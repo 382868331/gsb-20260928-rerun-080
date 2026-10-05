@@ -59,6 +59,25 @@ func (idx *BlockIndex) Descends(from, target string) bool {
 	}
 }
 
+// AncestryComplete 报告 from 的父链在索引中是否完整可溯源
+// （一路回溯到 PrevHash 为空的根）。父块缺失（待补充资料）时
+// 返回 false：此时无法证明该块与任何确认边界矛盾。
+func (idx *BlockIndex) AncestryComplete(from string) bool {
+	for cur := from; ; {
+		b, ok := idx.byHash[cur]
+		if !ok {
+			return false
+		}
+		if b.PrevHash == "" {
+			return true
+		}
+		if _, parentExists := idx.byHash[b.PrevHash]; !parentExists {
+			return false
+		}
+		cur = b.PrevHash
+	}
+}
+
 // EffectiveCheckpoint 返回研究线已确认检查点中高度最高者
 // （检查点区块必须属于该线，高度由链接关系计算）。
 func EffectiveCheckpoint(line *model.ResearchLine, idx *BlockIndex) *model.Checkpoint {
@@ -143,12 +162,17 @@ func CompareLines(a, b *model.ResearchLine, blocks []model.Block, id string) mod
 	cpA := EffectiveCheckpoint(a, idx)
 	cpB := EffectiveCheckpoint(b, idx)
 	// 跨越确认边界：区块与对方的生效检查点互不互为祖先（真正分叉），
-	// 而不是检查点之前的历史或之后的正常延伸。
+	// 而不是检查点之前的历史或之后的正常延伸。父块缺失的待补充资料
+	// 无法证明矛盾：先作为可接纳的待补充项保留（带出处），父块迟到后
+	// 再重新判断；只有祖先链完整且确实不包含检查点时才判定为冲突。
 	crosses := func(h string, cp *model.Checkpoint) bool {
 		if cp == nil || h == cp.Hash {
 			return false
 		}
-		return !idx.Descends(h, cp.Hash) && !idx.Descends(cp.Hash, h)
+		if idx.Descends(h, cp.Hash) || idx.Descends(cp.Hash, h) {
+			return false
+		}
+		return idx.AncestryComplete(h) && idx.AncestryComplete(cp.Hash)
 	}
 	conflictSet := map[string]bool{}
 	for _, h := range cmp.OnlyA {
